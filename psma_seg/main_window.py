@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QSettings, Qt, QTimer
+from PyQt5.QtCore import QItemSelection, QItemSelectionModel, QSettings, Qt, QTimer
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QComboBox,
                              QDockWidget, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
@@ -474,7 +474,9 @@ class MainWindow(QMainWindow):
             ["View", "#", "Area cm²", "Area px", "Max counts", "Total counts",
              "Mean counts", "Centre (row, col)", "Windows"])
         self.lesion_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.lesion_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.lesion_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.lesion_table.setToolTip("Ctrl+click / Shift+click selects several lesions, "
+                                     "Ctrl+A selects all, Delete removes the selected ones")
         self.lesion_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.lesion_table.verticalHeader().setVisible(False)
         self.lesion_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -482,10 +484,20 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.lesion_table)
         row = QHBoxLayout()
         self.lesion_summary = QLabel("No lesions")
-        b_del = QPushButton("Delete selected lesion")
-        b_del.clicked.connect(self._delete_selected_lesion)
+        self.btn_select_all = QPushButton("Select all")
+        self.btn_select_all.setToolTip("Select every lesion in the table (Ctrl+A)")
+        self.btn_select_all.clicked.connect(self._select_all_lesions)
+        self.btn_delete_lesions = QPushButton("Delete selected")
+        self.btn_delete_lesions.setToolTip("Remove the selected lesions from the mask (Delete). "
+                                           "Ctrl+Z restores them.")
+        self.btn_delete_lesions.clicked.connect(self._delete_selected_lesions)
+        a_del = QAction("Delete selected lesions", self.lesion_table, shortcut="Delete",
+                        triggered=self._delete_selected_lesions)
+        a_del.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        self.lesion_table.addAction(a_del)
         row.addWidget(self.lesion_summary, 1)
-        row.addWidget(b_del)
+        row.addWidget(self.btn_select_all)
+        row.addWidget(self.btn_delete_lesions)
         lay.addLayout(row)
         dock = QDockWidget("Lesions", self)
         dock.setObjectName("lesions")
@@ -1024,8 +1036,7 @@ class MainWindow(QMainWindow):
     def _refresh_lesion_table(self):
         if self.model is None:
             return
-        selected = self._selected_lesion()
-        keep = (selected[0], selected[1]["bbox_rc"]) if selected else None
+        keep = {(v, tuple(st["bbox_rc"])) for v, st in self._selected_lesions()}
         self.lesion_rows = []
         in_sum = self._is_sum_layer()
         names = self.study.energy_windows
@@ -1049,15 +1060,14 @@ class MainWindow(QMainWindow):
                 it.setTextAlignment(Qt.AlignCenter)
                 t.setItem(i, j, it)
         t.clearSelection()
-        for c in self.canvases.values():
-            c.highlight_box(None)
-        if keep is not None:   # keep the user's selection if that lesion is unchanged
+        if keep:   # keep the user's selection for lesions that are unchanged
+            sel = QItemSelection()
             for i, (v, st) in enumerate(self.lesion_rows):
-                if (v, st["bbox_rc"]) == keep:
-                    t.selectRow(i)
-                    self.canvases[v].highlight_box(st["bbox_rc"])
-                    break
+                if (v, tuple(st["bbox_rc"])) in keep:
+                    sel.select(t.model().index(i, 0), t.model().index(i, t.columnCount() - 1))
+            t.selectionModel().select(sel, QItemSelectionModel.Select)
         t.blockSignals(False)
+        self._show_selected_boxes()
         sy, sx = self.study.pixel_spacing
         parts = []
         for v, m in self.model.masks.items():
@@ -1069,37 +1079,63 @@ class MainWindow(QMainWindow):
         self.stats_label.setText(summary)
         self.lesion_summary.setText(summary.replace("<br>", "   ·   "))
 
-    def _selected_lesion(self) -> tuple[str, dict] | None:
-        rows = self.lesion_table.selectionModel().selectedRows()
-        if not rows or rows[0].row() >= len(self.lesion_rows):
-            return None
-        return self.lesion_rows[rows[0].row()]
+    def _selected_lesions(self) -> list[tuple[str, dict]]:
+        rows = sorted(i.row() for i in self.lesion_table.selectionModel().selectedRows())
+        return [self.lesion_rows[r] for r in rows if r < len(self.lesion_rows)]
+
+    def _show_selected_boxes(self):
+        sel = self._selected_lesions()
+        for v, c in self.canvases.items():
+            c.highlight_box([st["bbox_rc"] for vv, st in sel if vv == v] or None)
+        n = len(sel)
+        self.btn_delete_lesions.setText(f"Delete selected ({n})" if n else "Delete selected")
+        self.btn_delete_lesions.setEnabled(bool(n))
+        self.btn_select_all.setEnabled(bool(self.lesion_rows))
 
     def _on_lesion_selected(self):
-        for c in self.canvases.values():
-            c.highlight_box(None)
-        sel = self._selected_lesion()
-        if sel is None:
-            return
-        v, st = sel
-        canvas = self.canvases[v]
-        canvas.highlight_box(st["bbox_rc"])
-        canvas.center_on_raw(*st["centroid_rc"])
+        self._show_selected_boxes()
+        sel = self._selected_lesions()
+        if len(sel) == 1:     # jump to a single lesion; several stay where they are
+            v, st = sel[0]
+            self.canvases[v].center_on_raw(*st["centroid_rc"])
 
-    def _delete_selected_lesion(self):
-        sel = self._selected_lesion()
-        if sel is None or self.model is None:
-            return
-        v, st = sel
-        mask = self.model.mask(v)
+    def _select_all_lesions(self):
+        self.lesion_table.selectAll()
+        self.lesion_table.setFocus()
+
+    @staticmethod
+    def _lesion_component(mask: np.ndarray, st: dict) -> np.ndarray | None:
         r0, c0, r1, c1 = st["bbox_rc"]
         r, c = (int(round(x)) for x in st["centroid_rc"])
         if not mask[r, c]:  # centroid can fall outside a non-convex lesion
             ys, xs = np.nonzero(mask[r0:r1, c0:c1])
+            if not len(ys):
+                return None
             r, c = r0 + int(ys[0]), c0 + int(xs[0])
-        comp = component_at(mask, r, c, search=0)
-        if comp is not None:
-            self.model.apply(v, comp, 0)
+        return component_at(mask, r, c, search=0)
+
+    def _delete_selected_lesions(self):
+        sel = self._selected_lesions()
+        if not sel or self.model is None:
+            return
+        if len(sel) > 1:
+            where = (" in every energy window" if self._is_sum_layer()
+                     else f" in {self._layer_name()}" if self.model.n_layers > 1 else "")
+            r = QMessageBox.question(
+                self, "Delete lesions",
+                f"Delete the {len(sel)} selected lesions{where}?\n\n"
+                "You can restore them with Undo (Ctrl+Z).",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return
+        regions: dict[str, np.ndarray] = {}
+        masks = {v: self.model.mask(v) for v in {v for v, _ in sel}}
+        for v, st in sel:
+            comp = self._lesion_component(masks[v], st)
+            if comp is not None:
+                regions[v] = comp if v not in regions else regions[v] | comp
+        self.model.apply_many(regions, 0)     # one undo step for all of them
+        self.statusBar().showMessage(f"Deleted {len(sel)} lesion(s) — Ctrl+Z to undo", 5000)
 
     def _on_grow_settings(self, *_):
         self.ctx.grow_percent = float(self.grow_slider.value())

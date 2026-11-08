@@ -67,3 +67,15 @@ def test_energy_window_layers():
     m.set_active(0)
     m.clear("ant")                           # clear only window 0
     assert m.layers["ant"][0].sum() == 0 and m.layers["ant"][1].sum() > 0
+
+
+def test_multi_view_edit_is_one_undo_step(model):
+    a = np.zeros((100, 50), bool); a[10:20, 10:20] = True
+    model.apply("ant", a, 1)
+    model.apply("post", a, 1)
+    model.apply_many({"ant": a, "post": a}, 0)            # e.g. "delete all lesions"
+    assert model.masks["ant"].sum() == 0 and model.masks["post"].sum() == 0
+    model.undo()                                          # one Ctrl+Z restores both views
+    assert model.masks["ant"].sum() == 100 and model.masks["post"].sum() == 100
+    model.redo()
+    assert model.masks["ant"].sum() == 0 and model.masks["post"].sum() == 0

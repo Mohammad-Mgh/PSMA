@@ -171,10 +171,11 @@ class ImageCanvas(QGraphicsView):
         self.path_item.setPath(path)
 
     def highlight_box(self, bbox_rc=None):
-        """Dashed rectangle around (r0, c0, r1, c1) or remove it."""
+        """Dashed rectangle(s) around (r0, c0, r1, c1) - one box or a list - or remove."""
         path = QPainterPath()
-        if bbox_rc is not None:
-            r0, c0, r1, c1 = bbox_rc
+        boxes = [] if bbox_rc is None else (
+            [bbox_rc] if np.isscalar(bbox_rc[0]) else list(bbox_rc))
+        for r0, c0, r1, c1 in boxes:
             path.addRect(QRectF(c0 - 2, r0 - 2, c1 - c0 + 4, r1 - r0 + 4))
         self.highlight_item.setPath(path)
 

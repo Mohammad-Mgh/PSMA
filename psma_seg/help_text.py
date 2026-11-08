@@ -76,6 +76,6 @@ is mirrored for display only; masks are stored in the original DICOM orientation
 
 <h3>Lesion table</h3>
 <p>Lists the lesions of the selected energy window; in <i>Sum</i> the <b>Windows</b> column
-says which windows each lesion is in. Click a row to jump to that lesion. Counts are from
+says which windows each lesion is in. Click a row to jump to that lesion. Ctrl+click / Shift+click selects several, <b>Select all</b> (or Ctrl+A) selects every lesion, and <b>Delete selected</b> (or the Delete key) removes them in one step; one Ctrl+Z brings them all back. Counts are from
 the energy window currently shown.</p>
 """

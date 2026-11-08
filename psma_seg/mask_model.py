@@ -41,9 +41,10 @@ class MaskModel(QObject):
         self.layers: dict[str, np.ndarray] = {
             v: np.zeros((self.n_layers, *self.shape), np.uint8) for v in views}
         self.active = SUM
-        self._undo: list[tuple[str, np.ndarray]] = []
-        self._redo: list[tuple[str, np.ndarray]] = []
-        self._stroke: tuple[str, np.ndarray] | None = None
+        # each undo / redo step: {view: layers before the edit} (one or more views)
+        self._undo: list[dict[str, np.ndarray]] = []
+        self._redo: list[dict[str, np.ndarray]] = []
+        self._stroke: dict[str, np.ndarray] | None = None
         self.dirty = False
 
     # ------------------------------------------------------------- layers
@@ -84,19 +85,22 @@ class MaskModel(QObject):
         return {v: self.mask(v) for v in self.layers}
 
     # ------------------------------------------------------------- history
-    def begin_edit(self, view: str):
-        """Call before a modification (one stroke / one operation)."""
-        self._stroke = (view, self.layers[view].copy())
+    def begin_edit(self, views):
+        """Call before a modification (one stroke / one operation) of one view or a
+        list of views; the whole edit becomes a single undo step."""
+        views = [views] if isinstance(views, str) else list(views)
+        self._stroke = {v: self.layers[v].copy() for v in views}
 
     def end_edit(self):
         """Commit the current edit to the undo stack if it changed anything."""
         if self._stroke is None:
             return
-        view, before = self._stroke
+        before = {v: arr for v, arr in self._stroke.items()
+                  if not np.array_equal(arr, self.layers[v])}
         self._stroke = None
-        if np.array_equal(before, self.layers[view]):
+        if not before:
             return
-        self._undo.append((view, before))
+        self._undo.append(before)
         if len(self._undo) > MAX_UNDO:
             self._undo.pop(0)
         self._redo.clear()
@@ -118,11 +122,13 @@ class MaskModel(QObject):
     def _swap(self, src, dst):
         if not src:
             return
-        view, arr = src.pop()
-        dst.append((view, self.layers[view].copy()))
-        self.layers[view] = arr
+        step = src.pop()
+        dst.append({v: self.layers[v].copy() for v in step})
+        for v, arr in step.items():
+            self.layers[v] = arr
         self.dirty = True
-        self.changed.emit(view)
+        for v in step:
+            self.changed.emit(v)
         self.historyChanged.emit()
 
     # ------------------------------------------------------------- editing
@@ -153,6 +159,16 @@ class MaskModel(QObject):
         self.changed.emit(view)
         if undoable:
             self.end_edit()
+
+    def apply_many(self, regions: dict[str, np.ndarray], value: int):
+        """apply() on several views as one undo step. regions: view -> bool (H, W)."""
+        regions = {v: r for v, r in regions.items() if r is not None}
+        if not regions:
+            return
+        self.begin_edit(list(regions))
+        for v, region in regions.items():
+            self.apply(v, region, value, undoable=False)
+        self.end_edit()
 
     def set_mask(self, view: str, mask: np.ndarray, undoable: bool = True):
         """Replace the active layer(s) with `mask` (for SUM: every window gets it)."""
