@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Annotation output contains patient data - never commit
+dataset/
+# Local path to a sample DICOM for tests (contains patient name)
+tests/sample_path.txt
