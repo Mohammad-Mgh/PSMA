@@ -12,7 +12,12 @@ from PyQt5.QtCore import Qt
 from scipy import ndimage
 
 from . import segmentation as seg
-from .mask_model import MaskModel
+from .mask_model import MaskModel, disk_offsets
+
+TRACE_COLOR = (255, 200, 0)        # level-tracing outline
+SEED_LESION_COLOR = (0, 200, 80)   # grow from seeds: lesion seeds
+SEED_BG_COLOR = (255, 210, 0)      # grow from seeds: background seeds
+SEED_RESULT_COLOR = (0, 200, 255)  # grow from seeds: preview of the result
 
 
 @dataclass
@@ -23,19 +28,23 @@ class ToolContext:
     grow_percent: float = 40.0   # region-grow threshold, % of local peak
     grow_radius: int = 30        # region-grow max distance from peak, pixels
     grow_smooth: bool = True     # Gaussian pre-smoothing (planar images are noisy)
+    trace_smooth: bool = True    # level tracing on the smoothed image
     _smooth_cache: dict = field(default_factory=dict)
 
     def set_images(self, images: dict):
         self.images = images
         self._smooth_cache = {}
 
-    def grow_image(self, view: str) -> np.ndarray:
-        img = self.images[view]
-        if not self.grow_smooth:
-            return img
+    def smoothed(self, view: str) -> np.ndarray:
         if view not in self._smooth_cache:
-            self._smooth_cache[view] = ndimage.gaussian_filter(img, sigma=1.0)
+            self._smooth_cache[view] = ndimage.gaussian_filter(self.images[view], sigma=1.0)
         return self._smooth_cache[view]
+
+    def grow_image(self, view: str) -> np.ndarray:
+        return self.smoothed(view) if self.grow_smooth else self.images[view]
+
+    def trace_image(self, view: str) -> np.ndarray:
+        return self.smoothed(view) if self.trace_smooth else self.images[view]
 
 
 class Tool:
@@ -59,6 +68,10 @@ class Tool:
         pass
 
     def hover(self, canvas, row: int, col: int):
+        pass
+
+    def leave(self, canvas):
+        """Mouse left the canvas."""
         pass
 
     def double_click(self, canvas, row: int, col: int, ev):
@@ -280,3 +293,173 @@ class DeleteLesionTool(Tool):
         comp = seg.component_at(model.mask(view), row, col)
         if comp is not None:
             model.apply(view, comp, 0)
+
+
+# ===================================================================== 3D Slicer style tools
+class LevelTraceTool(Tool):
+    """Level tracing (3D Slicer): moving the mouse shows the iso-count outline through the
+    pixel under the cursor; click adds the enclosed region, Shift+click removes it."""
+    name = "trace"
+
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        self._canvas = None
+        self._key = None
+
+    def _region(self, canvas, row, col):
+        view = canvas.view_name
+        if view not in self.ctx.images:
+            return None
+        return seg.level_trace(self.ctx.trace_image(view), row, col)
+
+    def hover(self, canvas, row, col):
+        key = (canvas.view_name, row, col)
+        if key == self._key and canvas is self._canvas:
+            return
+        if self._canvas is not None and canvas is not self._canvas:
+            self._canvas.set_preview(None)
+        self._canvas, self._key = canvas, key
+        region = self._region(canvas, row, col)
+        canvas.set_preview(None if region is None else [(region, TRACE_COLOR, 40, True)])
+
+    def press(self, canvas, row, col, ev):
+        model = self.ctx.model
+        region = self._region(canvas, row, col)
+        if model is None or region is None:
+            return
+        value = 0 if ev.modifiers() & Qt.ShiftModifier else 1
+        model.apply(canvas.view_name, region, value)
+
+    def leave(self, canvas):
+        canvas.set_preview(None)
+        self._key = None
+
+    def cancel(self):
+        if self._canvas is not None:
+            self._canvas.set_preview(None)
+        self._canvas, self._key = None, None
+
+
+class SeedGrowTool(Tool):
+    """Grow from seeds (3D Slicer): drag inside the lesion (lesion seeds) and, if needed,
+    Shift+drag on neighbouring background (background seeds). A preview of the split is
+    shown after each stroke; Enter (or Apply) adds it to the mask, Esc cancels,
+    Backspace removes the last stroke."""
+    name = "seeds"
+    shows_brush = True
+
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        self.on_change = None      # callback(tool) for the UI (Apply button state)
+        self._reset()
+
+    def _reset(self):
+        self.seeds: dict[str, list[np.ndarray]] = {}   # view -> [lesion, background]
+        self.results: dict[str, np.ndarray | None] = {}
+        self.canvases: dict = {}
+        self._history: list[tuple[str, np.ndarray, np.ndarray]] = []
+        self._stroke = None    # (view, kind, last (row, col))
+
+    @property
+    def has_result(self) -> bool:
+        return any(r is not None and r.any() for r in self.results.values())
+
+    def _stamp(self, view, kind, r0, c0, r1, c1):
+        arr = self.seeds[view][kind]
+        h, w = arr.shape
+        n = max(abs(r1 - r0), abs(c1 - c0), 1)
+        rr = np.rint(np.linspace(r0, r1, n + 1)).astype(int)
+        cc = np.rint(np.linspace(c0, c1, n + 1)).astype(int)
+        dy, dx = disk_offsets(self.ctx.brush_size)
+        rows, cols = (rr[:, None] + dy).ravel(), (cc[:, None] + dx).ravel()
+        ok = (rows >= 0) & (rows < h) & (cols >= 0) & (cols < w)
+        arr[rows[ok], cols[ok]] = True
+
+    def press(self, canvas, row, col, ev):
+        model = self.ctx.model
+        view = canvas.view_name
+        if model is None or view not in self.ctx.images:
+            return
+        if view not in self.seeds:
+            self.seeds[view] = [np.zeros(model.shape, bool), np.zeros(model.shape, bool)]
+        self.canvases[view] = canvas
+        lesion, bg = self.seeds[view]
+        self._history.append((view, lesion.copy(), bg.copy()))
+        kind = 1 if ev.modifiers() & Qt.ShiftModifier else 0
+        self._stroke = (view, kind, (row, col))
+        self._stamp(view, kind, row, col, row, col)
+        self._show(view)
+
+    def move(self, canvas, row, col, ev):
+        if self._stroke is None or canvas.view_name != self._stroke[0]:
+            return
+        view, kind, (r0, c0) = self._stroke
+        self._stamp(view, kind, r0, c0, row, col)
+        self._stroke = (view, kind, (row, col))
+        self._show(view)
+
+    def release(self, canvas, row, col, ev):
+        if self._stroke is None:
+            return
+        view = self._stroke[0]
+        self._stroke = None
+        self._update_result(view)
+
+    def _update_result(self, view):
+        lesion, bg = self.seeds[view]
+        self.results[view] = seg.grow_from_seeds(self.ctx.images[view], lesion, bg)
+        self._show(view)
+        if self.on_change:
+            self.on_change(self)
+
+    def _show(self, view):
+        canvas = self.canvases.get(view)
+        if canvas is None:
+            return
+        layers = []
+        res = self.results.get(view)
+        if res is not None:
+            layers.append((res, SEED_RESULT_COLOR, 50, True))
+        lesion, bg = self.seeds[view]
+        layers += [(bg, SEED_BG_COLOR, 170, False), (lesion, SEED_LESION_COLOR, 170, False)]
+        canvas.set_preview(layers)
+
+    def apply(self) -> bool:
+        """Add the previewed lesion(s) to the mask (one undo step per view)."""
+        model = self.ctx.model
+        applied = False
+        if model is not None:
+            for view, res in self.results.items():
+                if res is not None and res.any():
+                    model.apply(view, res, 1)
+                    applied = True
+        self.cancel()
+        return applied
+
+    def undo_stroke(self):
+        if not self._history:
+            return
+        view, lesion, bg = self._history.pop()
+        self.seeds[view] = [lesion, bg]
+        self._update_result(view)
+
+    def key(self, canvas, ev) -> bool:
+        if not self.seeds:
+            return False
+        if ev.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.apply()
+        elif ev.key() == Qt.Key_Escape:
+            self.cancel()
+        elif ev.key() == Qt.Key_Backspace:
+            self.undo_stroke()
+        else:
+            return False
+        return True
+
+    def cancel(self):
+        """Discard all seeds and the preview."""
+        for c in self.canvases.values():
+            c.set_preview(None)
+        self._reset()
+        if self.on_change:
+            self.on_change(self)

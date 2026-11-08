@@ -48,3 +48,36 @@ def test_component_at_and_stats():
     assert [d["area_px"] for d in st] == [100, 50]     # sorted head -> feet
     assert st[0]["area_cm2"] == 4.0 and st[0]["total_counts"] == 200
     assert st[1]["bbox_rc"] == [60, 70, 65, 80]
+
+
+def _blobs():
+    yy, xx = np.mgrid[:100, :100]
+    small = 100 * np.exp(-((yy - 50) ** 2 + (xx - 40) ** 2) / 50)
+    big = 300 * np.exp(-((yy - 50) ** 2 + (xx - 62) ** 2) / 80)
+    return small + big
+
+
+def test_level_trace_follows_count_level():
+    from psma_seg.segmentation import level_trace
+    yy, xx = np.mgrid[:80, :80]
+    img = 100 * np.exp(-((yy - 40) ** 2 + (xx - 40) ** 2) / 100)
+    inner = level_trace(img, 40, 45)          # closer to the centre -> smaller region
+    outer = level_trace(img, 40, 50)
+    assert inner is not None and outer is not None
+    assert inner.sum() < outer.sum() and inner[40, 40] and outer[40, 40]
+    assert (inner & ~outer).sum() == 0
+    assert level_trace(np.zeros((10, 10)), 5, 5) is None          # no counts
+    assert level_trace(img, 0, 0) is None                          # background: too large
+
+
+def test_grow_from_seeds_separates_touching_hot_spots():
+    from psma_seg.segmentation import grow_from_seeds
+    img = _blobs()
+    fg = np.zeros(img.shape, bool)
+    fg[50, 40] = True
+    bg = np.zeros(img.shape, bool)
+    bg[50, 62] = True
+    region = grow_from_seeds(img, fg, bg)
+    assert region[50, 40] and not region[50, 62]
+    assert 50 < region.sum() < 1500
+    assert grow_from_seeds(img, np.zeros_like(fg), bg) is None    # no lesion seed

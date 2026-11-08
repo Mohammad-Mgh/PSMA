@@ -23,6 +23,13 @@ with no lesion is a valid negative case. Use <i>Excluded</i> for unusable scans.
 <tr><td><b>G</b></td><td>Region grow: click a hot lesion. Pixels ≥ threshold % of the local
 peak, connected to it and within the max radius, are added. Moving the sliders re-tunes
 the last lesion.</td></tr>
+<tr><td><b>T</b></td><td>Level tracing (as in 3D Slicer): moving the mouse shows the outline
+of the count level under the cursor; click to add that region. Point near the lesion edge for
+a larger region, nearer the centre for a smaller one.</td></tr>
+<tr><td><b>S</b></td><td>Grow from seeds (as in 3D Slicer): drag inside the lesion (green
+seeds); if it touches other uptake, Shift+drag on that background (yellow seeds). The blue
+preview updates after each stroke; <b>Enter</b> / Apply adds it, Esc cancels, Backspace
+removes the last stroke. Seed size = brush size.</td></tr>
 <tr><td><b>B</b></td><td>Brush: paint by dragging.</td></tr>
 <tr><td><b>E</b></td><td>Eraser.</td></tr>
 <tr><td><b>L</b></td><td>Lasso: drag a closed outline, <i>or</i> click points and

@@ -126,3 +126,81 @@ def lesion_stats(mask: np.ndarray, image: np.ndarray | None,
     for i, d in enumerate(out):
         d["id"] = i + 1
     return out
+
+
+# ---------------------------------------------------------------- 3D Slicer style tools
+def level_trace(img: np.ndarray, row: int, col: int,
+                max_fraction: float = 0.25) -> np.ndarray | None:
+    """Level tracing: region enclosed by the iso-count line through (row, col).
+
+    The 8-connected pixels with value >= the value under the cursor that contain the
+    cursor pixel, holes filled. None outside the image, on zero counts, or when the
+    region would cover more than `max_fraction` of the image (cursor on background).
+    """
+    h, w = img.shape
+    if not (0 <= row < h and 0 <= col < w):
+        return None
+    level = float(img[row, col])
+    if level <= 0:
+        return None
+    lab, _ = ndimage.label(img >= level, structure=CONN8)
+    region = lab == lab[row, col]
+    if region.sum() > max_fraction * img.size:
+        return None
+    return ndimage.binary_fill_holes(region)
+
+
+def grow_from_seeds(img: np.ndarray, lesion_seeds: np.ndarray, background_seeds: np.ndarray,
+                    margin: int = 20, sigma: float = 1.0) -> np.ndarray | None:
+    """Grow from seeds (Fast GrowCut, as in 3D Slicer's Segment Editor).
+
+    Every pixel gets the label of the seed it can reach most cheaply, where a step
+    between neighbouring pixels costs their count difference, so the lesion /
+    background border falls on the count edge. Works in the bounding box of all
+    seeds plus `margin` pixels; the box border counts as background (unless painted
+    as lesion), so a single lesion stroke is already enough.
+    Returns a full-size bool lesion mask, or None without lesion seeds.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    fg = np.asarray(lesion_seeds, bool)
+    bg = np.asarray(background_seeds, bool) & ~fg
+    if not fg.any():
+        return None
+    h, w = img.shape
+    rows, cols = np.nonzero(fg | bg)
+    r0, r1 = max(0, rows.min() - margin), min(h, rows.max() + margin + 1)
+    c0, c1 = max(0, cols.min() - margin), min(w, cols.max() + margin + 1)
+    sub = np.asarray(img[r0:r1, c0:c1], np.float64)
+    if sigma:
+        sub = ndimage.gaussian_filter(sub, sigma)
+    span = float(sub.max() - sub.min()) or 1.0
+    sub = sub / span
+    sh, sw = sub.shape
+    idx = np.arange(sh * sw).reshape(sh, sw)
+    a_list, b_list, w_list = [], [], []
+    for (dr, dc), f in (((0, 1), 1.0), ((1, 0), 1.0), ((1, 1), 2 ** 0.5), ((1, -1), 2 ** 0.5)):
+        ra = slice(0, sh - dr)
+        rb = slice(dr, sh)
+        ca = slice(max(0, -dc), sw - max(0, dc))
+        cb = slice(max(0, dc), sw - max(0, -dc))
+        a_list.append(idx[ra, ca].ravel())
+        b_list.append(idx[rb, cb].ravel())
+        # small constant step keeps zero-difference edges in the sparse graph
+        w_list.append((np.abs(sub[ra, ca] - sub[rb, cb]) + 1e-4).ravel() * f)
+    graph = coo_matrix((np.concatenate(w_list), (np.concatenate(a_list), np.concatenate(b_list))),
+                       shape=(sh * sw, sh * sw)).tocsr()
+
+    markers = np.zeros((sh, sw), np.int8)
+    markers[[0, -1], :] = 2
+    markers[:, [0, -1]] = 2
+    markers[bg[r0:r1, c0:c1]] = 2
+    markers[fg[r0:r1, c0:c1]] = 1
+    seeds = np.flatnonzero(markers)
+    _, _, src = dijkstra(graph, directed=False, indices=seeds, min_only=True,
+                         return_predecessors=True)
+    labels = np.where(src >= 0, markers.ravel()[np.clip(src, 0, None)], 0).reshape(sh, sw)
+    out = np.zeros((h, w), bool)
+    out[r0:r1, c0:c1] = ndimage.binary_fill_holes(labels == 1)
+    return out

@@ -146,9 +146,10 @@ class MaskModel(QObject):
 
     def apply(self, view: str, region: np.ndarray, value: int, undoable: bool = True):
         """Set `region` (bool H x W) to value in the active layer(s)."""
+        region = np.asarray(region, bool)
         if undoable:
             self.begin_edit(view)
-        self._sel(view)[:, np.asarray(region, bool)] = 1 if value else 0
+        self._sel(view)[:, region] = 1 if value else 0
         self.changed.emit(view)
         if undoable:
             self.end_edit()

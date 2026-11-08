@@ -89,6 +89,10 @@ class ImageCanvas(QGraphicsView):
         self.brush_item.setPen(pen)
         self.brush_item.setVisible(False)
 
+        self.preview_item = QGraphicsPixmapItem(self.image_item)  # tool previews
+        self.preview_item.setTransformationMode(Qt.FastTransformation)
+        self.preview_item.setZValue(1)
+
         self.path_item = QGraphicsPathItem(self.image_item)   # lasso / polygon preview
         ppen = QPen(QColor(255, 210, 0), 1.5)
         ppen.setCosmetic(True)
@@ -135,6 +139,25 @@ class ImageCanvas(QGraphicsView):
             self.overlay_item.setPixmap(QPixmap.fromImage(
                 render_overlay(mask, color, opacity, outline_only, partial, partial_color)))
 
+    def set_preview(self, layers=None):
+        """Tool preview drawn above the mask. layers: list of (bool mask, (r, g, b),
+        fill alpha 0-255, outline: bool); later layers paint over earlier ones."""
+        if not layers or self.image is None:
+            self.preview_item.setPixmap(QPixmap())
+            return
+        h, w = self.image.shape
+        rgba = np.zeros((h, w, 4), np.uint8)
+        for mask, color, alpha, outline in layers:
+            m = np.asarray(mask, bool)
+            if not m.any():
+                continue
+            if alpha:
+                rgba[m] = (*color, alpha)
+            if outline:
+                rgba[m & ~ndimage.binary_erosion(m, border_value=0)] = (*color, 255)
+        self.preview_item.setPixmap(QPixmap.fromImage(
+            QImage(rgba.data, w, h, 4 * w, QImage.Format_RGBA8888).copy()))
+
     def show_path(self, points, hover=None):
         """Preview polyline through raw (row, col) points (+ rubber band to hover)."""
         path = QPainterPath()
@@ -166,6 +189,7 @@ class ImageCanvas(QGraphicsView):
         self.image = None
         self.image_item.setPixmap(QPixmap())
         self.overlay_item.setPixmap(QPixmap())
+        self.preview_item.setPixmap(QPixmap())
 
     # ------------------------------------------------------------------ tools
     def set_tool(self, tool: Tool | None):
@@ -303,6 +327,8 @@ class ImageCanvas(QGraphicsView):
 
     def leaveEvent(self, ev):
         self.brush_item.setVisible(False)
+        if self.tool is not None:
+            self.tool.leave(self)
         super().leaveEvent(ev)
 
     def contextMenuEvent(self, ev):

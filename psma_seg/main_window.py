@@ -22,7 +22,8 @@ from .export import (STATUSES, backfill_patient_groups, case_dir, load_case, loa
 from .help_text import HELP_HTML
 from .mask_model import MaskModel
 from .segmentation import component_at, lesion_stats
-from .tools import (BrushTool, DeleteLesionTool, LassoTool, PanTool, RegionGrowTool,
+from .tools import (BrushTool, DeleteLesionTool, LassoTool, LevelTraceTool, PanTool,
+                    RegionGrowTool, SeedGrowTool,
                     ToolContext)
 
 VIEW_TITLES = {"ant": "ANTERIOR", "post": "POSTERIOR"}
@@ -53,6 +54,26 @@ QToolButton#tool:checked {
 QToolButton#primary { font-weight: bold; padding: 4px; }
 QTabBar::tab { padding: 6px 12px; }
 """
+
+TOOL_DEFS = (("grow", "Region grow", "G"), ("trace", "Level tracing", "T"),
+             ("seeds", "Grow from seeds", "S"), ("brush", "Brush", "B"),
+             ("eraser", "Eraser", "E"),
+             ("lasso", "Lasso", "L"), ("delete", "Delete lesion", "D"),
+             ("pan", "Pan", "H"))
+
+TOOL_HINTS = {
+    "grow": "Click a hot lesion. <b>Shift</b>+click removes.",
+    "trace": "Move over a lesion to see its outline, click to add. <b>Shift</b>+click removes.",
+    "seeds": "Drag inside the lesion (<span style='color:#00b050'>green</span>). "
+             "<b>Shift</b>+drag on nearby background, e.g. kidney "
+             "(<span style='color:#d4a000'>yellow</span>). Backspace undoes a stroke.",
+    "brush": "Drag to paint. <b>Shift</b> erases.",
+    "eraser": "Drag to erase. <b>Shift</b> paints.",
+    "lasso": "Drag an outline, or click points and double-click / Enter to close. "
+             "<b>Shift</b> removes.",
+    "delete": "Click a lesion to delete it.",
+    "pan": "Drag to move the image.",
+}
 
 STATUS_MARKS = {  # file-list marker, colour, tooltip
     "complete": ("✔ ", "#1a7f37", "Complete (reviewed)"),
@@ -90,7 +111,10 @@ class MainWindow(QMainWindow):
                       "eraser": BrushTool(self.ctx, value=0),
                       "grow": RegionGrowTool(self.ctx),
                       "lasso": LassoTool(self.ctx),
-                      "delete": DeleteLesionTool(self.ctx)}
+                      "delete": DeleteLesionTool(self.ctx),
+                      "trace": LevelTraceTool(self.ctx),
+                      "seeds": SeedGrowTool(self.ctx)}
+        self.tools["seeds"].on_change = self._on_seeds_changed
         self.current_tool = None
         self.lesion_rows: list[tuple[str, dict]] = []
         self._stats_timer = QTimer(self, singleShot=True, interval=120,
@@ -109,6 +133,7 @@ class MainWindow(QMainWindow):
         self.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
         self.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
         self.set_tool("grow")
+        self._on_seeds_changed(self.tools["seeds"])
         self.set_brush_size(self.ctx.brush_size)
         self._on_grow_settings()
         self._on_overlay_style()
@@ -233,13 +258,35 @@ class MainWindow(QMainWindow):
         tools_box, tl = self._group("Tools")
         grid = QGridLayout()
         grid.setSpacing(6)
-        for i, key in enumerate(("grow", "brush", "eraser", "lasso", "delete", "pan")):
+        for i, (key, _, _) in enumerate(TOOL_DEFS):
             b = self._action_button(self.tool_actions[key], "tool")
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setMinimumHeight(32)
             grid.addWidget(b, i // 2, i % 2)
         tl.addLayout(grid)
-        tl.addWidget(self._hint("Hold <b>Shift</b> with any tool to remove instead of add."))
+        self.tool_hint = self._hint("")
+        tl.addWidget(self.tool_hint)
+
+        trace_box, trl = self._group("Level tracing")
+        self.trace_smooth_check = QCheckBox("Trace on smoothed image")
+        self.trace_smooth_check.setToolTip("Gaussian smoothing (1 pixel): smoother outlines "
+                                           "on noisy low-count images")
+        self.trace_smooth_check.setChecked(self.ctx.trace_smooth)
+        self.trace_smooth_check.toggled.connect(self._on_trace_smooth)
+        trl.addWidget(self.trace_smooth_check)
+        trl.addWidget(self._hint("The outline follows the count level under the cursor: "
+                                 "point at the lesion edge for a larger region, closer to "
+                                 "the centre for a smaller one."))
+
+        seeds_box, sdl = self._group("Grow from seeds")
+        self.seeds_status = self._hint("No seeds yet.")
+        sdl.addWidget(self.seeds_status)
+        self.seeds_apply_btn = QPushButton("Apply  (Enter)")
+        self.seeds_apply_btn.setObjectName("primary")
+        self.seeds_apply_btn.clicked.connect(self._apply_seeds)
+        self.seeds_cancel_btn = QPushButton("Cancel  (Esc)")
+        self.seeds_cancel_btn.clicked.connect(lambda: self.tools["seeds"].cancel())
+        sdl.addLayout(self._button_row(self.seeds_apply_btn, self.seeds_cancel_btn))
 
         grow_box, gl = self._group("Region grow")
         self.grow_slider = QSlider(Qt.Horizontal)
@@ -261,7 +308,7 @@ class MainWindow(QMainWindow):
         gl.addWidget(self.smooth_check)
         gl.addWidget(self._hint("Moving a slider re-tunes the lesion you clicked last."))
 
-        brush_box, bl = self._group("Brush / eraser")
+        brush_box, bl = self._group("Brush size")
         self.brush_slider = QSlider(Qt.Horizontal)
         self.brush_slider.setRange(1, MAX_BRUSH)
         self.brush_slider.setValue(self.ctx.brush_size)
@@ -374,6 +421,8 @@ class MainWindow(QMainWindow):
         kl.addWidget(QLabel(
             "<table cellspacing='0' cellpadding='2'>"
             "<tr><td><b>G</b></td><td>Region grow</td></tr>"
+            "<tr><td><b>T</b></td><td>Level tracing</td></tr>"
+            "<tr><td><b>S</b></td><td>Grow from seeds (Enter applies)</td></tr>"
             "<tr><td><b>B / E</b></td><td>Brush / eraser</td></tr>"
             "<tr><td><b>L</b></td><td>Lasso (Enter closes, Esc cancels)</td></tr>"
             "<tr><td><b>D</b></td><td>Delete lesion</td></tr>"
@@ -386,8 +435,12 @@ class MainWindow(QMainWindow):
 
         self.control_tabs = QTabWidget()
         self.control_tabs.setDocumentMode(True)
-        self.control_tabs.addTab(self._tab_page(layer_box, tools_box, grow_box, brush_box,
-                                                mask_box),
+        self.tool_option_boxes = {"grow": [grow_box], "trace": [trace_box],
+                                  "seeds": [brush_box, seeds_box],
+                                  "brush": [brush_box], "eraser": [brush_box]}
+        self._all_option_boxes = [grow_box, trace_box, seeds_box, brush_box]
+        self.control_tabs.addTab(self._tab_page(layer_box, tools_box, grow_box, trace_box,
+                                                seeds_box, brush_box, mask_box),
                                  "Segment")
         self.control_tabs.addTab(self._tab_page(case_box, summary_box), "Case")
         self.control_tabs.addTab(self._tab_page(img_box, opt_box, mouse_box), "Display")
@@ -453,9 +506,7 @@ class MainWindow(QMainWindow):
         # segmentation actions
         group = QActionGroup(self)
         self.tool_actions: dict[str, QAction] = {}
-        for key, text, sc in (("grow", "Region grow", "G"), ("brush", "Brush", "B"),
-                              ("eraser", "Eraser", "E"), ("lasso", "Lasso", "L"),
-                              ("delete", "Delete lesion", "D"), ("pan", "Pan", "H")):
+        for key, text, sc in TOOL_DEFS:
             a = QAction(text, self, shortcut=sc, checkable=True)
             a.setToolTip(f"{text} ({sc})")
             a.triggered.connect(lambda _=False, k=key: self.set_tool(k))
@@ -850,6 +901,8 @@ class MainWindow(QMainWindow):
         self.model.changed.connect(self._refresh_overlay)
         self.model.historyChanged.connect(self._update_history_actions)
         self.ctx.model = self.model
+        for t in self.tools.values():
+            t.cancel()
         for v in self.study.views:
             self._refresh_overlay(v)
         self._update_history_actions()
@@ -862,6 +915,11 @@ class MainWindow(QMainWindow):
         self.tool_actions[key].setChecked(True)
         for c in self.canvases.values():
             c.set_tool(self.tools[key])
+            c.set_preview(None)
+        shown = self.tool_option_boxes.get(key, [])
+        for box in self._all_option_boxes:
+            box.setVisible(box in shown)
+        self.tool_hint.setText(TOOL_HINTS.get(key, ""))
 
     def set_brush_size(self, size: int):
         size = int(np.clip(size, 1, MAX_BRUSH))
@@ -924,6 +982,26 @@ class MainWindow(QMainWindow):
         else:
             text = f"Drawing / erasing changes only <b>{self._layer_name()}</b>."
         self.layer_hint.setText(text)
+
+    # ------------------------------------------------- Slicer-style tools
+    def _on_trace_smooth(self, on: bool):
+        self.ctx.trace_smooth = on
+        self.tools["trace"].cancel()
+
+    def _on_seeds_changed(self, tool):
+        n_views = len(tool.seeds)
+        if not n_views:
+            text = "No seeds yet."
+        elif tool.has_result:
+            text = "Preview shown in blue. <b>Apply</b> adds it to the mask."
+        else:
+            text = "Paint at least one stroke <b>inside</b> the lesion."
+        self.seeds_status.setText(text)
+        self.seeds_apply_btn.setEnabled(tool.has_result)
+        self.seeds_cancel_btn.setEnabled(bool(n_views))
+
+    def _apply_seeds(self):
+        self.tools["seeds"].apply()
 
     def next_energy_window(self):
         if self.ew_combo.count():

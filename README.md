@@ -61,6 +61,10 @@ Press **F1** in the app for all shortcuts.
 The **Lesions** table (bottom) lists each lesion with its area (cm²) and counts. Click a row to
 jump to that lesion.
 
+**3D Slicer-style tools.** *Level tracing* (T): hover to see the iso-count outline, click to
+add it. *Grow from seeds* (S): paint lesion seeds, Shift-paint background seeds, Enter to
+apply (Fast GrowCut, the algorithm of Slicer's Segment Editor). Each tool's settings appear in the Segment tab only while it is selected.
+
 **Energy windows.** Each energy window has its own mask. Pick the window at the top of the
 *Segment* tab (or press **W**). In **Sum of all windows**, every edit applies to all windows,
 and lesions present in only some windows are drawn in blue (red = all windows). With one
