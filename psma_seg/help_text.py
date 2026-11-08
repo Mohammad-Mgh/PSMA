@@ -32,11 +32,25 @@ double-click / Enter to close. Esc cancels, Backspace removes the last point.</t
 <tr><td><b>Shift</b></td><td>with any tool: remove instead of add.</td></tr>
 </table>
 
+<h3>Energy windows</h3>
+<p>Each energy window (e.g. 113 keV and 208 keV) has its own lesion mask. Choose the window
+at the top of the <b>Segment</b> tab, or press <b>W</b> to cycle.</p>
+<ul>
+<li><b>Sum of all windows</b>: drawing, erasing, region grow, lasso, delete and clear change
+<b>every</b> window at once. The overlay shows all lesions:
+<span style="color:#ff1e1e">red</span> = in all windows,
+<span style="color:#1e8cff">blue</span> = in some windows only.</li>
+<li><b>One window</b>: edits change only that window's mask, and only its lesions are
+shown.</li>
+</ul>
+<p>Undo / redo work across windows.</p>
+
 <h3>Keys</h3>
 <table cellpadding="3">
 <tr><td>Ctrl+Z / Ctrl+Y</td><td>Undo / redo</td></tr>
 <tr><td>[ &nbsp; ]</td><td>Smaller / bigger brush</td></tr>
 <tr><td>X</td><td>Show / hide mask</td></tr>
+<tr><td>W</td><td>Next energy window (Sum → 113 keV → 208 keV …)</td></tr>
 <tr><td>A</td><td>Auto contrast</td></tr>
 <tr><td>I</td><td>Invert grey scale</td></tr>
 <tr><td>F</td><td>Fit image to window</td></tr>
@@ -54,6 +68,7 @@ Right-drag: contrast (up/down = upper level, left/right = lower level).</p>
 is mirrored for display only; masks are stored in the original DICOM orientation.</p>
 
 <h3>Lesion table</h3>
-<p>Click a row to jump to that lesion. Counts are from the energy window currently shown.
-The statistics saved in <tt>meta.json</tt> always use the sum of all windows.</p>
+<p>Lists the lesions of the selected energy window; in <i>Sum</i> the <b>Windows</b> column
+says which windows each lesion is in. Click a row to jump to that lesion. Counts are from
+the energy window currently shown.</p>
 """

@@ -39,8 +39,12 @@ def gray_to_qimage(a: np.ndarray) -> QImage:
 
 
 def render_overlay(mask: np.ndarray, color: tuple[int, int, int], opacity: float,
-                   outline_only: bool) -> QImage:
-    """Binary mask -> RGBA image: translucent fill + opaque outline."""
+                   outline_only: bool, partial: np.ndarray | None = None,
+                   partial_color: tuple[int, int, int] | None = None) -> QImage:
+    """Binary mask -> RGBA image: translucent fill + opaque outline.
+
+    Pixels in `partial` (lesion in only some energy windows) use `partial_color`.
+    """
     h, w = mask.shape
     rgba = np.zeros((h, w, 4), np.uint8)
     m = mask > 0
@@ -49,6 +53,10 @@ def render_overlay(mask: np.ndarray, color: tuple[int, int, int], opacity: float
         fill_alpha = 0 if outline_only else int(round(opacity * 255))
         rgba[m] = (*color, fill_alpha)
         rgba[edge] = (*color, 255)
+        if partial is not None and partial_color is not None:
+            p = m & (partial > 0)
+            rgba[p] = (*partial_color, fill_alpha)
+            rgba[p & edge] = (*partial_color, 255)
     return QImage(rgba.data, w, h, 4 * w, QImage.Format_RGBA8888).copy()
 
 
@@ -120,12 +128,12 @@ class ImageCanvas(QGraphicsView):
         self.image_item.setPixmap(QPixmap.fromImage(gray_to_qimage(g)))
 
     def set_mask(self, mask: np.ndarray | None, color=(255, 30, 30), opacity=0.4,
-                 outline_only=False):
+                 outline_only=False, partial=None, partial_color=None):
         if mask is None:
             self.overlay_item.setPixmap(QPixmap())
         else:
-            self.overlay_item.setPixmap(
-                QPixmap.fromImage(render_overlay(mask, color, opacity, outline_only)))
+            self.overlay_item.setPixmap(QPixmap.fromImage(
+                render_overlay(mask, color, opacity, outline_only, partial, partial_color)))
 
     def show_path(self, points, hover=None):
         """Preview polyline through raw (row, col) points (+ rubber band to hover)."""

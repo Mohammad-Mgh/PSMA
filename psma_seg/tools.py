@@ -134,32 +134,36 @@ class RegionGrowTool(Tool):
         if model is None or view not in self.ctx.images:
             return
         value = 0 if ev.modifiers() & Qt.ShiftModifier else 1
-        base = model.masks[view].copy()
+        base = model.layers[view].copy()
         model.begin_edit(view)
         result = self._apply(view, row, col, base, value)
         model.end_edit()
-        self._last = (view, row, col, base, value, result) if result is not None else None
+        self._last = ((view, model.active, row, col, base, value, result)
+                      if result is not None else None)
 
     def _apply(self, view, row, col, base, value):
         region = seg.region_grow(self.ctx.grow_image(view), row, col,
                                  self.ctx.grow_percent, self.ctx.grow_radius)
         if region is None:
             return None
-        new = base.copy()
-        new[region] = value
-        self.ctx.model.set_mask(view, new, undoable=False)
-        return self.ctx.model.masks[view].copy()
+        model = self.ctx.model
+        model.layers[view] = base.copy()            # start again from the state before the click
+        model.apply(view, region, value, undoable=False)
+        return model.layers[view].copy()
 
     def regrow(self) -> bool:
         """Re-run the last region grow with the current settings (if still the latest edit)."""
-        if self._last is None or self.ctx.model is None:
+        model = self.ctx.model
+        if self._last is None or model is None:
             return False
-        view, row, col, base, value, result = self._last
-        if view not in self.ctx.model.masks or not np.array_equal(self.ctx.model.masks[view], result):
+        view, active, row, col, base, value, result = self._last
+        if (view not in model.layers or model.active != active
+                or not np.array_equal(model.layers[view], result)):
             self._last = None      # mask was edited since -> don't touch it
             return False
         new_result = self._apply(view, row, col, base, value)
-        self._last = (view, row, col, base, value, new_result) if new_result is not None else None
+        self._last = ((view, active, row, col, base, value, new_result)
+                      if new_result is not None else None)
         return True
 
     def forget(self):
@@ -255,12 +259,7 @@ class LassoTool(Tool):
         if model is None or len(points) < 3:
             return
         view = canvas.view_name
-        poly = seg.polygon_mask(model.shape, points)
-        model.begin_edit(view)
-        new = model.masks[view].copy()
-        new[poly] = value
-        model.set_mask(view, new, undoable=False)
-        model.end_edit()
+        model.apply(view, seg.polygon_mask(model.shape, points), value)
 
     def cancel(self):
         if self._canvas is not None:
@@ -269,7 +268,7 @@ class LassoTool(Tool):
 
 
 class DeleteLesionTool(Tool):
-    """Click on a lesion to delete that whole connected region."""
+    """Click on a lesion to delete that whole connected region (in the active layer(s))."""
     name = "delete"
     cursor = Qt.ForbiddenCursor
 
@@ -278,11 +277,6 @@ class DeleteLesionTool(Tool):
         view = canvas.view_name
         if model is None:
             return
-        comp = seg.component_at(model.masks[view], row, col)
-        if comp is None:
-            return
-        model.begin_edit(view)
-        new = model.masks[view].copy()
-        new[comp] = 0
-        model.set_mask(view, new, undoable=False)
-        model.end_edit()
+        comp = seg.component_at(model.mask(view), row, col)
+        if comp is not None:
+            model.apply(view, comp, 0)

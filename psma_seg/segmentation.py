@@ -84,8 +84,13 @@ def component_at(mask: np.ndarray, row: int, col: int, search: int = 3) -> np.nd
 
 
 def lesion_stats(mask: np.ndarray, image: np.ndarray | None,
-                 spacing: tuple[float, float]) -> list[dict]:
-    """Per-lesion statistics: area, counts, centroid, bounding box."""
+                 spacing: tuple[float, float], layers: np.ndarray | None = None,
+                 layer_names: list[str] | None = None) -> list[dict]:
+    """Per-lesion statistics: area, counts, centroid, bounding box.
+
+    With `layers` (n_windows, H, W) and `layer_names`, each lesion also gets
+    "windows": the names of the energy-window masks that overlap it.
+    """
     lab, n = label_lesions(mask)
     if n == 0:
         return []
@@ -97,6 +102,9 @@ def lesion_stats(mask: np.ndarray, image: np.ndarray | None,
         totals = ndimage.sum(image, lab, idx)
         maxima = ndimage.maximum(image, lab, idx)
     px_cm2 = spacing[0] * spacing[1] / 100.0
+    present = None
+    if layers is not None:
+        present = [np.asarray(ndimage.maximum(layer, lab, idx)) > 0 for layer in layers]
     out = []
     for i in range(n):
         sl = boxes[i]
@@ -109,6 +117,9 @@ def lesion_stats(mask: np.ndarray, image: np.ndarray | None,
             d["total_counts"] = float(totals[i])
             d["max_counts"] = float(maxima[i])
             d["mean_counts"] = round(float(totals[i]) / float(areas[i]), 2)
+        if present is not None:
+            names = layer_names or [str(k) for k in range(len(present))]
+            d["windows"] = [names[k] for k in range(len(present)) if present[k][i]]
         out.append(d)
     # sort top-to-bottom (head to feet) for a stable, readable order
     out.sort(key=lambda d: (d["centroid_rc"][0], d["centroid_rc"][1]))

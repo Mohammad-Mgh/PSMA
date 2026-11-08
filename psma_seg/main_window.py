@@ -221,6 +221,15 @@ class MainWindow(QMainWindow):
 
     def _build_controls_dock(self):
         # ======================= Segment tab
+        layer_box, ll = self._group("Energy window")
+        self.ew_combo = QComboBox()
+        self.ew_combo.setToolTip("Image shown and mask layer edited")
+        self.ew_combo.currentIndexChanged.connect(self._on_energy_window)
+        ll.addWidget(self.ew_combo)
+        self.layer_hint = self._hint("")
+        self.layer_hint.setTextFormat(Qt.RichText)
+        ll.addWidget(self.layer_hint)
+
         tools_box, tl = self._group("Tools")
         grid = QGridLayout()
         grid.setSpacing(6)
@@ -319,9 +328,6 @@ class MainWindow(QMainWindow):
 
         # ======================= Display tab
         img_box, il = self._group("Image")
-        self.ew_combo = QComboBox()
-        self.ew_combo.currentIndexChanged.connect(self._on_energy_window)
-        il.addWidget(self._labeled("Energy window", self.ew_combo))
         self.max_slider = QSlider(Qt.Horizontal)
         self.max_slider.setRange(1, LEVEL_SCALE)
         self.max_slider.valueChanged.connect(self._on_level_sliders)
@@ -372,6 +378,7 @@ class MainWindow(QMainWindow):
             "<tr><td><b>L</b></td><td>Lasso (Enter closes, Esc cancels)</td></tr>"
             "<tr><td><b>D</b></td><td>Delete lesion</td></tr>"
             "<tr><td><b>H</b></td><td>Pan</td></tr>"
+            "<tr><td><b>W</b></td><td>Next energy window (Sum, 113, 208…)</td></tr>"
             "<tr><td><b>Ctrl+Z / Y</b></td><td>Undo / redo</td></tr>"
             "<tr><td><b>Ctrl+S</b></td><td>Save</td></tr>"
             "<tr><td><b>Ctrl+Enter</b></td><td>Save and next file</td></tr>"
@@ -379,7 +386,8 @@ class MainWindow(QMainWindow):
 
         self.control_tabs = QTabWidget()
         self.control_tabs.setDocumentMode(True)
-        self.control_tabs.addTab(self._tab_page(tools_box, grow_box, brush_box, mask_box),
+        self.control_tabs.addTab(self._tab_page(layer_box, tools_box, grow_box, brush_box,
+                                                mask_box),
                                  "Segment")
         self.control_tabs.addTab(self._tab_page(case_box, summary_box), "Case")
         self.control_tabs.addTab(self._tab_page(img_box, opt_box, mouse_box), "Display")
@@ -408,10 +416,10 @@ class MainWindow(QMainWindow):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(2, 2, 2, 2)
-        self.lesion_table = QTableWidget(0, 8)
+        self.lesion_table = QTableWidget(0, 9)
         self.lesion_table.setHorizontalHeaderLabels(
             ["View", "#", "Area cm²", "Area px", "Max counts", "Total counts",
-             "Mean counts", "Centre (row, col)"])
+             "Mean counts", "Centre (row, col)", "Windows"])
         self.lesion_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.lesion_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.lesion_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -463,6 +471,8 @@ class MainWindow(QMainWindow):
                            triggered=lambda: self.set_brush_size(self.ctx.brush_size + 1))
         a_toggle = QAction("Show / hide mask", self, shortcut="X",
                            triggered=lambda: self.show_mask_check.toggle())
+        a_next_ew = QAction("Next energy window", self, shortcut="W",
+                            triggered=self.next_energy_window)
         self.act_save = QAction("Save", self, shortcut="Ctrl+S", triggered=self.save_case,
                                 enabled=False)
         self.act_save_next = QAction("Save && next", self, shortcut="Ctrl+Return",
@@ -500,7 +510,7 @@ class MainWindow(QMainWindow):
         for a in list(self.tool_actions.values()) + [a_smaller, a_bigger]:
             me.addAction(a)
         mv = self.menuBar().addMenu("&View")
-        for a in (a_fit, a_auto, a_inv, a_toggle):
+        for a in (a_fit, a_auto, a_inv, a_toggle, a_next_ew):
             mv.addAction(a)
         self.addAction(a_toggle)
         mh = self.menuBar().addMenu("&Help")
@@ -635,11 +645,9 @@ class MainWindow(QMainWindow):
         for view, canvas in self.canvases.items():
             if view not in study.views:
                 canvas.clear()
-            mirrored = study.mirror.get(view, False)
-            self.view_labels[view].setText(
-                VIEW_TITLES[view] + ("  (mirrored: patient right on left)" if mirrored else ""))
-        self._update_images(reset_contrast=True)
         self._new_mask_model()
+        self._update_images(reset_contrast=True)
+        self._update_layer_labels()
         self._on_grow_settings()          # mm values depend on this file's pixel size
         msg = self._load_existing_case()
         QTimer.singleShot(0, self.fit_views)  # after layout has sized the canvases
@@ -705,8 +713,8 @@ class MainWindow(QMainWindow):
             return "new case"
         masks, meta = found
         for v, m in masks.items():
-            if v in self.model.masks:
-                self.model.set_mask(v, m, undoable=False)
+            if v in self.model.layers:
+                self.model.set_layers(v, m)
         self.model.dirty = False
         self._set_case_fields(meta.get("status", "in_progress"), meta.get("notes", ""),
                               None)  # keep the current user as annotator
@@ -749,7 +757,7 @@ class MainWindow(QMainWindow):
         if annotator is None:
             return False
         status = self.status_combo.currentData()
-        n_px = sum(int(m.sum()) for m in self.model.masks.values())
+        n_px = sum(int(m.sum()) for m in self.model.layers.values())
         if status == "complete" and n_px == 0:
             r = QMessageBox.question(
                 self, "No lesions",
@@ -760,7 +768,7 @@ class MainWindow(QMainWindow):
                 return False
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
-            out = save_case(self.dataset_dir, self.study, self.model.masks, annotator=annotator,
+            out = save_case(self.dataset_dir, self.study, self.model.layers, annotator=annotator,
                             status=status, notes=self.notes_edit.toPlainText().strip())
         except Exception as e:  # noqa: BLE001
             QApplication.restoreOverrideCursor()
@@ -836,7 +844,9 @@ class MainWindow(QMainWindow):
 
     # ========================================================= segmentation
     def _new_mask_model(self):
-        self.model = MaskModel(self.study.shape, self.study.views)
+        self.model = MaskModel(self.study.shape, self.study.views,
+                               len(self.study.energy_windows))
+        self.model.active = self.ew_combo.currentData()
         self.model.changed.connect(self._refresh_overlay)
         self.model.historyChanged.connect(self._update_history_actions)
         self.ctx.model = self.model
@@ -870,7 +880,7 @@ class MainWindow(QMainWindow):
         self.overlay_opacity = self.opacity_slider.value() / 100.0
         self.outline_only = self.outline_check.isChecked()
         if self.model:
-            for v in self.model.masks:
+            for v in self.model.layers:
                 self._refresh_overlay(v)
 
     def _on_overlay_visible(self, visible: bool):
@@ -878,9 +888,46 @@ class MainWindow(QMainWindow):
             c.set_overlay_visible(visible)
 
     def _refresh_overlay(self, view: str):
-        self.canvases[view].set_mask(self.model.masks[view], config.MASK_COLOR,
-                                     self.overlay_opacity, self.outline_only)
+        partial = self.model.partial(view) if self._is_sum_layer() else None
+        self.canvases[view].set_mask(self.model.mask(view), config.MASK_COLOR,
+                                     self.overlay_opacity, self.outline_only,
+                                     partial, config.PARTIAL_MASK_COLOR)
         self._update_stats()
+
+    def _is_sum_layer(self) -> bool:
+        """Sum of all windows is shown and the study has more than one window."""
+        return (self.model is not None and self.model.active == SUM
+                and self.model.n_layers > 1)
+
+    def _layer_name(self) -> str:
+        if self.model is None or self.model.active == SUM:
+            return "Sum of all windows"
+        return self.study.energy_windows[self.model.active]
+
+    def _update_layer_labels(self):
+        """Canvas titles + Segment-tab hint say which mask layer is being edited."""
+        if self.study is None:
+            return
+        for view in self.study.views:
+            mirrored = self.study.mirror.get(view, False)
+            self.view_labels[view].setText(
+                f"{VIEW_TITLES[view]}  ·  {self._layer_name()}"
+                + ("  (mirrored: patient right on left)" if mirrored else ""))
+        if len(self.study.energy_windows) <= 1:
+            text = "Only one energy window in this file."
+        elif self.model.active == SUM:
+            r, g, b = config.MASK_COLOR
+            r2, g2, b2 = config.PARTIAL_MASK_COLOR
+            text = ("Drawing / erasing changes <b>every</b> energy window.<br>"
+                    f"<span style='color:rgb({r},{g},{b})'>■</span> in all windows &nbsp; "
+                    f"<span style='color:rgb({r2},{g2},{b2})'>■</span> in some windows only")
+        else:
+            text = f"Drawing / erasing changes only <b>{self._layer_name()}</b>."
+        self.layer_hint.setText(text)
+
+    def next_energy_window(self):
+        if self.ew_combo.count():
+            self.ew_combo.setCurrentIndex((self.ew_combo.currentIndex() + 1) % self.ew_combo.count())
 
     def _update_history_actions(self):
         self.act_undo.setEnabled(bool(self.model and self.model.can_undo()))
@@ -902,9 +949,13 @@ class MainWindow(QMainWindow):
         selected = self._selected_lesion()
         keep = (selected[0], selected[1]["bbox_rc"]) if selected else None
         self.lesion_rows = []
+        in_sum = self._is_sum_layer()
+        names = self.study.energy_windows
         for v, m in self.model.masks.items():
-            for st in lesion_stats(m, self.images.get(v), self.study.pixel_spacing):
+            for st in lesion_stats(m, self.images.get(v), self.study.pixel_spacing,
+                                   self.model.layers[v] if in_sum else None, names):
                 self.lesion_rows.append((v, st))
+        self.lesion_table.setColumnHidden(8, not in_sum)
         t = self.lesion_table
         t.blockSignals(True)
         t.setRowCount(len(self.lesion_rows))
@@ -912,7 +963,9 @@ class MainWindow(QMainWindow):
             vals = [VIEW_TITLES[v].title(), st["id"], f"{st['area_cm2']:.2f}", st["area_px"],
                     f"{st.get('max_counts', 0):.0f}", f"{st.get('total_counts', 0):.0f}",
                     f"{st.get('mean_counts', 0):.1f}",
-                    f"{st['centroid_rc'][0]:.0f}, {st['centroid_rc'][1]:.0f}"]
+                    f"{st['centroid_rc'][0]:.0f}, {st['centroid_rc'][1]:.0f}",
+                    ("all" if len(st.get("windows", [])) == len(names)
+                     else ", ".join(st.get("windows", [])))]
             for j, val in enumerate(vals):
                 it = QTableWidgetItem(str(val))
                 it.setTextAlignment(Qt.AlignCenter)
@@ -960,7 +1013,7 @@ class MainWindow(QMainWindow):
         if sel is None or self.model is None:
             return
         v, st = sel
-        mask = self.model.masks[v]
+        mask = self.model.mask(v)
         r0, c0, r1, c1 = st["bbox_rc"]
         r, c = (int(round(x)) for x in st["centroid_rc"])
         if not mask[r, c]:  # centroid can fall outside a non-convex lesion
@@ -968,9 +1021,7 @@ class MainWindow(QMainWindow):
             r, c = r0 + int(ys[0]), c0 + int(xs[0])
         comp = component_at(mask, r, c, search=0)
         if comp is not None:
-            new = mask.copy()
-            new[comp] = 0
-            self.model.set_mask(v, new)
+            self.model.apply(v, comp, 0)
 
     def _on_grow_settings(self, *_):
         self.ctx.grow_percent = float(self.grow_slider.value())
@@ -990,13 +1041,20 @@ class MainWindow(QMainWindow):
             self.model.redo()
 
     def clear_mask(self, view: str):
-        if self.model and view in self.model.masks and self.model.masks[view].any():
+        if self.model and view in self.model.layers and self.model.mask(view).any():
             self.model.clear(view)
 
     # ============================================================== display
     def _on_energy_window(self, _idx):
-        if self.study is not None:
-            self._update_images(reset_contrast=True)
+        if self.study is None:
+            return
+        if self.current_tool is not None:
+            self.current_tool.cancel()
+        if self.model is not None:
+            self.model.set_active(self.ew_combo.currentData())
+        self._update_images(reset_contrast=True)
+        self._update_layer_labels()
+        self.statusBar().showMessage(f"Energy window: {self._layer_name()}", 4000)
 
     def auto_contrast(self):
         if not self.images:

@@ -75,3 +75,17 @@ def test_backfill_old_dataset(tmp_path):
     meta = json.loads((ds / a1.case_id / "meta.json").read_text())
     assert meta["patient_group"] == "P0001"
     assert backfill_patient_groups(ds) == 0
+
+
+def test_load_sample_per_window_mask(tmp_path):
+    ds = tmp_path / "ds"
+    study = make_study(tmp_path)
+    layers = {v: np.zeros((2, 64, 32), np.uint8) for v in ("ant", "post")}
+    layers["ant"][1, 20:24, 10:14] = 1                  # only in window 1
+    save_case(ds, study, layers, annotator="t", status="complete")
+    _, m_sum = load_sample(ds, study.case_id, "ant")
+    _, m0 = load_sample(ds, study.case_id, "ant", mask_window=0)
+    img1, m1 = load_sample(ds, study.case_id, "ant", channels=1, mask_window=1)
+    assert m_sum.sum() == m1.sum() == 16 and m0.sum() == 0
+    assert img1.shape == (1, 64, 32)
+    np.testing.assert_array_equal(img1[0], study.frames[("ant", 1)])

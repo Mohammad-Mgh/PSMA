@@ -46,3 +46,24 @@ def test_noop_edit_not_recorded(model):
     model.paint_disk("ant", 5, 5, 3, 0)   # erase on empty mask
     model.end_edit()
     assert not model.can_undo() and not model.dirty
+
+
+def test_energy_window_layers():
+    from psma_seg.dicom_io import SUM
+    m = MaskModel((40, 20), ["ant"], n_layers=2)
+    m.set_active(SUM)                        # Sum: drawing goes to every window
+    m.begin_edit("ant"); m.paint_disk("ant", 5, 5, 3, 1); m.end_edit()
+    assert m.layers["ant"][0].sum() == m.layers["ant"][1].sum() > 0
+    m.set_active(1)                          # one window: only that layer changes
+    region = np.zeros((40, 20), bool); region[20:25, 5:10] = True
+    m.apply("ant", region, 1)
+    assert m.layers["ant"][1, 22, 7] == 1 and m.layers["ant"][0, 22, 7] == 0
+    m.set_active(SUM)
+    assert m.mask("ant")[22, 7] == 1 and m.partial("ant")[22, 7] and not m.partial("ant")[5, 5]
+    m.apply("ant", region, 0)                # erasing in Sum clears every window
+    assert m.layers["ant"][:, 20:25, 5:10].sum() == 0 and m.layers["ant"][0, 5, 5] == 1
+    m.undo()
+    assert m.layers["ant"][1, 22, 7] == 1
+    m.set_active(0)
+    m.clear("ant")                           # clear only window 0
+    assert m.layers["ant"][0].sum() == 0 and m.layers["ant"][1].sum() > 0

@@ -61,6 +61,12 @@ Press **F1** in the app for all shortcuts.
 The **Lesions** table (bottom) lists each lesion with its area (cm²) and counts. Click a row to
 jump to that lesion.
 
+**Energy windows.** Each energy window has its own mask. Pick the window at the top of the
+*Segment* tab (or press **W**). In **Sum of all windows**, every edit applies to all windows,
+and lesions present in only some windows are drawn in blue (red = all windows). With one
+window selected, edits change only that window. In *Sum*, the lesion table's *Windows* column
+shows which windows contain each lesion.
+
 ---
 
 ## For the training team: dataset format
@@ -74,11 +80,16 @@ dataset/
   case_key.csv       case_id -> patient name, ID, study date, source file   ⚠ CONTAINS PHI
   <case_id>/
     image.npz        ant, post: uint16 (n_energy_windows, 1024, 256) raw counts
-    mask.npz         ant, post: uint8 (1024, 256), 0 = background, 1 = lesion
-    image_ant_0000.nii.gz, image_ant_0001.nii.gz, mask_ant.nii.gz   (same for post)
-    mask_ant.png, preview_ant.png ...
+    mask.npz         ant, post: uint8 (n_energy_windows, 1024, 256), one mask per window
+                     ant_sum, post_sum: uint8 (1024, 256), union of the windows
+                     (0 = background, 1 = lesion)
+    image_ant_0000.nii.gz, image_ant_0001.nii.gz      (same for post)
+    mask_ant_0000.nii.gz, mask_ant_0001.nii.gz        per-window masks
+    mask_ant.nii.gz                                   union of the windows
+    mask_ant_0000.png, mask_ant.png, preview_ant.png ...
     meta.json        energy windows, frame mapping, pixel spacing, display_mirror,
-                     per-lesion stats, annotator, status, timestamps
+                     per-lesion stats (union, with the windows each lesion is in,
+                     plus lesions_by_window), annotator, status, timestamps
 ```
 
 - **Orientation**: arrays are stored exactly as in the DICOM (the posterior is **not**
@@ -90,6 +101,8 @@ dataset/
 - **Patient groups**: `patient_group` (P0001, P0002 …) is shared by all scans of the same
   patient, e.g. 24 h and 96 h, or different cycles. **Always split by patient**, otherwise
   the same patient ends up in both train and test.
+- **Older cases** (saved before per-window masks) have a single `(1024, 256)` mask per view.
+  The app and `load_sample` treat it as the same mask in every window.
 - **NIfTI** files use nnU-Net channel naming (`_0000` = first energy window, `_0001` = second),
   with 2D data stored as shape `(256, 1024, 1)` and the pixel spacing in mm in the header.
 
@@ -102,7 +115,9 @@ cases = load_index("dataset", statuses=("complete",))
 train, val, test = patient_split(cases, (0.7, 0.15, 0.15), seed=42)
 
 img, mask = load_sample("dataset", train[0]["case_id"], view="post",
-                        channels="sum",      # or "all" = one channel per energy window
+                        channels="sum",      # or "all" = one channel per energy window,
+                                             #    or 0 / 1 = a single energy window
+                        mask_window="sum",   # union of the windows, or 0 / 1 = that window's mask
                         mirror_post=True)    # posterior flipped to anterior orientation
 # img: float32 (C, 1024, 256), mask: uint8 (1024, 256)
 

@@ -50,7 +50,9 @@ def test_roundtrip_masks_and_images(saved):
     study, masks, ds, out = saved
     loaded, meta = load_case(ds, study)
     for v in masks:
-        np.testing.assert_array_equal(loaded[v], masks[v])
+        assert loaded[v].shape == (2, 64, 32)          # 2D mask was copied to both windows
+        np.testing.assert_array_equal(loaded[v][0], masks[v])
+        np.testing.assert_array_equal(loaded[v][1], masks[v])
         assert loaded[v].dtype == np.uint8 and set(np.unique(loaded[v])) <= {0, 1}
     with np.load(out / "image.npz") as z:
         assert z["ant"].shape == (2, 64, 32) and z["ant"].dtype == np.uint16
@@ -89,3 +91,32 @@ def test_resave_updates_index_row(saved):
 
 def test_unsaved_case_returns_none(tmp_path):
     assert load_case(tmp_path / "empty", make_study(tmp_path)) is None
+
+
+def test_per_window_masks(tmp_path):
+    study = make_study(tmp_path)
+    ds = tmp_path / "ds"
+    layers = {v: np.zeros((2, 64, 32), np.uint8) for v in ("ant", "post")}
+    layers["ant"][:, 10:15, 5:10] = 1          # lesion in both windows
+    layers["ant"][0, 40:44, 20:25] = 1         # lesion only in window 0 (113 keV)
+    out = save_case(ds, study, layers, annotator="t")
+    names = {p.name for p in out.iterdir()}
+    assert {"mask_ant_0000.nii.gz", "mask_ant_0001.nii.gz", "mask_ant_0000.png"} <= names
+    with np.load(out / "mask.npz") as z:
+        assert z["ant"].shape == (2, 64, 32) and z["ant_sum"].shape == (64, 32)
+        np.testing.assert_array_equal(z["ant_sum"], layers["ant"].any(0))
+    w1 = np.asarray(nib.load(str(out / "mask_ant_0001.nii.gz")).dataobj)[:, :, 0].T
+    np.testing.assert_array_equal(w1, layers["ant"][1])
+    loaded, meta = load_case(ds, study)
+    np.testing.assert_array_equal(loaded["ant"], layers["ant"])
+    wins = [l["windows"] for l in meta["lesions"]["ant"]]
+    assert wins == [["Lu177-113KeV", "Lu177-208KeV"], ["Lu177-113KeV"]]
+    assert len(meta["lesions_by_window"]["Lu177-208KeV"]["ant"]) == 1
+
+
+def test_old_2d_mask_file_still_loads(saved):
+    study, masks, ds, out = saved
+    np.savez_compressed(out / "mask.npz", **masks)      # format of version 0.1.0
+    loaded, _ = load_case(ds, study)
+    assert loaded["ant"].shape == (2, 64, 32)
+    np.testing.assert_array_equal(loaded["ant"][1], masks["ant"])
