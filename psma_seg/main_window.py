@@ -1,6 +1,7 @@
 """Main window: anterior and posterior canvases side by side + controls."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,7 @@ from .dicom_io import SUM, WholeBodyStudy, load_whole_body, scan_whole_body_file
 from .export import (STATUSES, backfill_patient_groups, case_dir, load_case, load_meta,
                      save_case)
 from .help_text import HELP_HTML
+from .report import Display, auto_level, default_report_path, write_report
 from .mask_model import MaskModel
 from .segmentation import component_at, lesion_stats
 from .tools import (BrushTool, DeleteLesionTool, LassoTool, LevelTraceTool, PanTool,
@@ -541,6 +543,11 @@ class MainWindow(QMainWindow):
         self.act_save_next = QAction("Save && next", self, shortcut="Ctrl+Return",
                                      triggered=self.save_and_next, enabled=False)
         self.act_save_next.setToolTip("Save and open the next file in the list (Ctrl+Enter)")
+        self.act_report = QAction("Export PDF report…", self, shortcut="Ctrl+P",
+                                  triggered=self.export_report, enabled=False)
+        self.act_report.setToolTip("PDF with Ant / Post images of every energy window, the "
+                                   "lesion outlines and the lesion tables (Ctrl+P). Saved next "
+                                   "to the DICOM file.")
         a_dataset = QAction("Set dataset folder…", self, triggered=self.choose_dataset_dir)
         a_open_ds = QAction("Open dataset folder in Explorer", self,
                             triggered=self.open_dataset_folder)
@@ -561,6 +568,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction(self.act_save)
         m.addAction(self.act_save_next)
+        m.addAction(self.act_report)
         m.addSeparator()
         m.addAction(a_dataset)
         m.addAction(a_open_ds)
@@ -716,6 +724,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.fit_views)  # after layout has sized the canvases
         self._update_info()
         self.act_save.setEnabled(True)
+        self.act_report.setEnabled(True)
         self.act_save_next.setEnabled(True)
         self._update_title()
         self._select_in_file_list(study.path)
@@ -845,6 +854,51 @@ class MainWindow(QMainWindow):
         self._mark_file_saved(self.study.path, status)
         self.statusBar().showMessage(f"Saved case {self.study.case_id} → {out}")
         return True
+
+    def report_display(self) -> Display:
+        """The on-screen display settings, relative to the auto level of the shown images."""
+        base = auto_level(list(self.images.values()))
+        return Display(rel_min=self.vmin / base, rel_max=self.vmax / base,
+                       gamma=self.gamma, inverted=self.inverted)
+
+    def export_report(self, path: str | Path | None = None) -> Path | None:
+        """PDF report next to the DICOM file (asks for a place if that folder is read-only)."""
+        if self.study is None or self.model is None:
+            return None
+        target = Path(path) if path else default_report_path(self.study)
+        if path is None:
+            if target.exists():
+                r = QMessageBox.question(
+                    self, "Report exists", f"{target.name} already exists next to the DICOM "
+                    "file.\n\nReplace it?", QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                if r != QMessageBox.Yes:
+                    return None
+            if not os.access(target.parent, os.W_OK):
+                f, _ = QFileDialog.getSaveFileName(
+                    self, "The DICOM folder is read-only — save the report as",
+                    str(Path.home() / target.name), "PDF (*.pdf)")
+                if not f:
+                    return None
+                target = Path(f)
+        unsaved = bool(self.model.dirty or self._case_dirty)
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            out = write_report(target, self.study, self.model.layers, self.report_display(),
+                               annotator=self.annotator_edit.text().strip(),
+                               status=STATUS_LABELS.get(self.status_combo.currentData(), ""),
+                               notes=self.notes_edit.toPlainText().strip(), unsaved=unsaved)
+        except Exception as e:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Report failed", str(e))
+            return None
+        QApplication.restoreOverrideCursor()
+        self.statusBar().showMessage(f"Report saved: {out}" +
+                                     ("  (segmentation not saved yet)" if unsaved else ""), 10000)
+        if path is None:
+            from PyQt5.QtCore import QUrl
+            from PyQt5.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(out)))
+        return out
 
     def save_and_next(self):
         if not self.save_case():
