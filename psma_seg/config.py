@@ -1,4 +1,5 @@
 """Application defaults."""
+import sys
 from pathlib import Path
 
 APP_NAME = "PSMA Whole-Body Segmentation"
@@ -12,7 +13,10 @@ AUTO_MAX_PERCENTILE = 95.0     # initial upper display level, percentile of non-
 ZOOM_STEP = 1.15
 
 # Output dataset
-DEFAULT_DATASET_DIR = Path(__file__).resolve().parent.parent / "dataset"   # <project>/dataset
+if getattr(sys, "frozen", False):   # packaged .exe: "dataset" next to the program
+    DEFAULT_DATASET_DIR = Path(sys.executable).resolve().parent / "dataset"
+else:                               # run from source: <project>/dataset
+    DEFAULT_DATASET_DIR = Path(__file__).resolve().parent.parent / "dataset"
 
 # Segmentation
 DEFAULT_BRUSH_SIZE = 5            # diameter in pixels (~12 mm at 2.4 mm/pixel)

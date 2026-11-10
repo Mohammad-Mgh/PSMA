@@ -30,6 +30,26 @@ If `pypi.org` is not reachable on your network, use a mirror:
 
 You can also give a file to open directly: `python -m psma_seg path\to\file.IMA`
 
+## Windows program (.exe) for doctors
+
+No Python is needed on the doctors' computers. Unzip `PSMA-Seg-<version>-win64.zip` anywhere
+(e.g. `C:\PSMA-Seg`) and double-click **`PSMA-Seg.exe`**. Keep the whole folder together: the
+exe needs its `_internal` folder.
+
+- Saved cases go to a `dataset` folder **next to the exe** by default. To use another folder
+  (e.g. a shared drive), use *File → Set dataset folder*; the choice is remembered.
+- Windows SmartScreen may warn on first start because the program is not code-signed:
+  *More info → Run anyway*.
+
+Build it (on a Windows computer with the development environment):
+
+```bash
+.venv/Scripts/python -m pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
+.venv/Scripts/python -m PyInstaller packaging/psma_seg.spec --noconfirm
+```
+
+Output: `dist/PSMA-Seg/PSMA-Seg.exe` (one folder, ~220 MB; ~95 MB zipped).
+
 ---
 
 ## For doctors: how to segment
