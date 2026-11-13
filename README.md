@@ -78,7 +78,8 @@ Output: `dist/PSMA-Seg/PSMA-Seg.exe` (one folder, ~220 MB; ~95 MB zipped).
 6. **Save & next** (Ctrl+Enter). Unsaved changes are never lost silently: the app asks
    before switching file or closing.
 
-Press **F1** in the app for all shortcuts.
+Press **F1** in the app for all shortcuts. *View → Theme* switches between the dark (default)
+and light theme; the choice is remembered between sessions.
 
 The **Lesions** table (bottom) lists each lesion with its area (cm²) and counts. Click a row to
 jump to that lesion.
@@ -186,4 +187,5 @@ line = full path) or from the
 | `psma_seg/export.py` | Save / load cases, index, anonymization |
 | `psma_seg/training_data.py` | Loader + patient-level split for training |
 | `psma_seg/main_window.py` | The application window |
+| `psma_seg/theme.py` | Light / dark themes (palette + stylesheet) |
 | `psma_seg/config.py` | Defaults (contrast, brush size, threshold method, …) |

@@ -24,37 +24,13 @@ from .help_text import HELP_HTML
 from .report import Display, auto_level, default_report_path, write_report
 from .mask_model import MaskModel
 from .segmentation import THRESHOLD_METHODS, component_at, lesion_stats
+from .theme import THEMES, apply_theme, theme
 from .tools import (BrushTool, DeleteLesionTool, LassoTool, LevelTraceTool, PanTool,
                     SeedGrowTool, ThresholdTool, ToolContext)
 
 VIEW_TITLES = {"ant": "ANTERIOR", "post": "POSTERIOR"}
 STATUS_LABELS = {"in_progress": "In progress", "complete": "Complete (reviewed)",
                  "excluded": "Excluded (bad quality / not usable)"}
-CONTROLS_QSS = """
-QGroupBox {
-    border: 1px solid palette(mid);
-    border-radius: 6px;
-    margin-top: 10px;
-    padding-top: 4px;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 4px;
-    color: palette(highlight);
-}
-QLabel#hint { color: #5f6368; }
-QLabel#value { color: palette(highlight); }
-QToolButton#tool { padding: 4px; }
-QToolButton#tool:checked {
-    background: palette(highlight);
-    color: palette(highlighted-text);
-    border: 1px solid palette(highlight);
-    border-radius: 4px;
-}
-QToolButton#primary { font-weight: bold; padding: 4px; }
-QTabBar::tab { padding: 6px 12px; }
-"""
 
 TOOL_DEFS = (("threshold", "Threshold", "R"), ("trace", "Level tracing", "T"),
              ("seeds", "Grow from seeds", "S"), ("brush", "Brush", "B"),
@@ -77,11 +53,11 @@ TOOL_HINTS = {
     "pan": "Drag to move the image.",
 }
 
-STATUS_MARKS = {  # file-list marker, colour, tooltip
-    "complete": ("✔ ", "#1a7f37", "Complete (reviewed)"),
-    "excluded": ("✖ ", "#888888", "Excluded"),
-    "in_progress": ("… ", "#b35900", "In progress"),
-    None: ("○ ", "#000000", "Not started"),
+STATUS_MARKS = {  # file-list marker, theme colour attribute, tooltip
+    "complete": ("✔ ", "ok", "Complete (reviewed)"),
+    "excluded": ("✖ ", "off", "Excluded"),
+    "in_progress": ("… ", "warn", "In progress"),
+    None: ("○ ", "text", "Not started"),
 }
 LEVEL_SCALE = 1000  # slider units per 100 % of max
 THR_SCALE = 1000    # threshold slider units per image maximum
@@ -153,7 +129,7 @@ class MainWindow(QMainWindow):
             col = QVBoxLayout()
             lbl = QLabel(VIEW_TITLES[view])
             lbl.setAlignment(Qt.AlignCenter)
-            lbl.setStyleSheet("font-weight: bold; font-size: 13px;")
+            lbl.setObjectName("viewTitle")
             lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             canvas = ImageCanvas(view)
             canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -461,7 +437,6 @@ class MainWindow(QMainWindow):
         self.control_tabs.addTab(self._tab_page(case_box, summary_box), "Case")
         self.control_tabs.addTab(self._tab_page(img_box, opt_box, mouse_box), "Display")
         self.control_tabs.addTab(self._tab_page(info_box, keys_box), "Info")
-        self.control_tabs.setStyleSheet(CONTROLS_QSS)
 
         dock = QDockWidget("Controls", self)
         dock.setObjectName("controls")
@@ -598,6 +573,17 @@ class MainWindow(QMainWindow):
         mv = self.menuBar().addMenu("&View")
         for a in (a_fit, a_auto, a_inv, a_toggle, a_next_ew):
             mv.addAction(a)
+        mv.addSeparator()
+        mt = mv.addMenu("&Theme")
+        theme_group = QActionGroup(self)
+        self.theme_actions = {}
+        for name in THEMES:
+            a = QAction(name.capitalize(), self, checkable=True,
+                        triggered=lambda _=False, n=name: self.set_theme(n))
+            theme_group.addAction(a)
+            mt.addAction(a)
+            self.theme_actions[name] = a
+        self.theme_actions[theme().name].setChecked(True)
         self.addAction(a_toggle)
         mh = self.menuBar().addMenu("&Help")
         mh.addAction(QAction("Keyboard shortcuts && help", self, shortcut="F1",
@@ -618,6 +604,18 @@ class MainWindow(QMainWindow):
         bb.rejected.connect(dlg.reject)
         lay.addWidget(bb)
         dlg.exec_()
+
+    def set_theme(self, name: str):
+        """Switch light / dark, remember it, and recolour theme-dependent items."""
+        t = apply_theme(QApplication.instance(), name)
+        self.settings.setValue("theme", t.name)
+        self.theme_actions[t.name].setChecked(True)
+        for c in self.canvases.values():
+            c.set_background(t.canvas)
+        for i in range(self.file_list.count()):
+            it = self.file_list.item(i)
+            self._set_item_status(it, it.data(Qt.UserRole + 2))
+        self.statusBar().showMessage(f"{t.name.capitalize()} theme", 3000)
 
     def show_about(self):
         from . import __version__
@@ -987,7 +985,8 @@ class MainWindow(QMainWindow):
     def _set_item_status(item: QListWidgetItem, status: str | None):
         mark, color, tip = STATUS_MARKS.get(status, STATUS_MARKS[None])
         item.setText(mark + item.data(Qt.UserRole + 1))
-        item.setForeground(QColor(color))
+        item.setData(Qt.UserRole + 2, status)
+        item.setForeground(QColor(getattr(theme(), color)))
         item.setToolTip(f"{item.data(Qt.UserRole)}\n{tip}")
 
     def _mark_file_saved(self, path: Path, status: str):

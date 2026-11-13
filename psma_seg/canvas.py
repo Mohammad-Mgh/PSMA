@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsP
 from scipy import ndimage
 
 from . import config
+from .theme import theme
 from .tools import PanTool, Tool
 
 
@@ -74,7 +75,7 @@ class ImageCanvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setDragMode(QGraphicsView.NoDrag)
         self.setMouseTracking(True)
-        self.setBackgroundBrush(QColor(40, 40, 40))
+        self.set_background(theme().canvas)
 
         self.image_item = QGraphicsPixmapItem()
         self.image_item.setTransformationMode(Qt.FastTransformation)
@@ -115,6 +116,10 @@ class ImageCanvas(QGraphicsView):
         self._syncing = False
 
     # ------------------------------------------------------------------ image
+    def set_background(self, color: str):
+        """Colour around the image (follows the application theme)."""
+        self.setBackgroundBrush(QColor(color))
+
     def set_image(self, img: np.ndarray, mirror: bool):
         first = self.image is None or self.image.shape != img.shape
         self.image = img

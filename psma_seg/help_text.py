@@ -71,6 +71,8 @@ shown.</li>
 <tr><td>Ctrl+O / Ctrl+Shift+O</td><td>Open file / folder</td></tr>
 </table>
 
+<p><b>Theme</b>: <i>View &rarr; Theme</i> switches between the dark (default) and light theme; the choice is remembered.</p>
+
 <h3>Mouse</h3>
 <p>Wheel: zoom (both views stay in sync) · Middle-drag or Ctrl+left-drag: pan ·
 Right-drag: contrast (up/down = upper level, left/right = lower level).</p>
