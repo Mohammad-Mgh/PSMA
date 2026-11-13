@@ -61,8 +61,10 @@ Output: `dist/PSMA-Seg/PSMA-Seg.exe` (one folder, ~220 MB; ~95 MB zipped).
 2. The **anterior** and **posterior** views are shown side by side. The posterior is mirrored,
    so the patient's right is on your left in both views.
 3. Segment **every lesion in both views**:
-   - **Region grow (G)**: click a hot lesion and it fills automatically. Adjust *Grow threshold*
-     (% of the lesion peak) and *Grow max radius*. The last lesion updates live.
+   - **Threshold (R)**: drag a rectangle around a lesion. Pixels inside it between the *Lower*
+     and *Upper* limit are previewed; pick an automatic *Method* (Otsu, Huang, IsoData, Li,
+     Maximum Entropy, Moments, Kittler-Illingworth, Renyi Entropy, Shanbhag, Triangle, Yen —
+     the methods of 3D Slicer's Threshold effect) or move the sliders, then press Enter.
    - **Brush (B) / Eraser (E)**: refine by hand. `[` `]` change the size.
    - **Lasso (L)**: draw around a lesion, or click points and double-click to close.
    - **Delete lesion (D)**: click a region to remove it.
@@ -178,10 +180,10 @@ line = full path) or from the
 |---|---|
 | `psma_seg/dicom_io.py` | Read NM whole-body DICOM, map frames to view / energy window |
 | `psma_seg/canvas.py` | Image view: display, overlay, zoom/pan, mouse → tools |
-| `psma_seg/tools.py` | Region grow, brush, eraser, lasso/polygon, delete |
+| `psma_seg/tools.py` | Threshold, level tracing, grow from seeds, brush, eraser, lasso/polygon, delete |
 | `psma_seg/segmentation.py` | Pure numpy algorithms + lesion statistics |
 | `psma_seg/mask_model.py` | Masks + undo/redo |
 | `psma_seg/export.py` | Save / load cases, index, anonymization |
 | `psma_seg/training_data.py` | Loader + patient-level split for training |
 | `psma_seg/main_window.py` | The application window |
-| `psma_seg/config.py` | Defaults (contrast, brush size, region-grow threshold, …) |
+| `psma_seg/config.py` | Defaults (contrast, brush size, threshold method, …) |

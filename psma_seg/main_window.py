@@ -23,10 +23,9 @@ from .export import (STATUSES, backfill_patient_groups, case_dir, load_case, loa
 from .help_text import HELP_HTML
 from .report import Display, auto_level, default_report_path, write_report
 from .mask_model import MaskModel
-from .segmentation import component_at, lesion_stats
+from .segmentation import THRESHOLD_METHODS, component_at, lesion_stats
 from .tools import (BrushTool, DeleteLesionTool, LassoTool, LevelTraceTool, PanTool,
-                    RegionGrowTool, SeedGrowTool,
-                    ToolContext)
+                    SeedGrowTool, ThresholdTool, ToolContext)
 
 VIEW_TITLES = {"ant": "ANTERIOR", "post": "POSTERIOR"}
 STATUS_LABELS = {"in_progress": "In progress", "complete": "Complete (reviewed)",
@@ -57,14 +56,15 @@ QToolButton#primary { font-weight: bold; padding: 4px; }
 QTabBar::tab { padding: 6px 12px; }
 """
 
-TOOL_DEFS = (("grow", "Region grow", "G"), ("trace", "Level tracing", "T"),
+TOOL_DEFS = (("threshold", "Threshold", "R"), ("trace", "Level tracing", "T"),
              ("seeds", "Grow from seeds", "S"), ("brush", "Brush", "B"),
              ("eraser", "Eraser", "E"),
              ("lasso", "Lasso", "L"), ("delete", "Delete lesion", "D"),
              ("pan", "Pan", "H"))
 
 TOOL_HINTS = {
-    "grow": "Click a hot lesion. <b>Shift</b>+click removes.",
+    "threshold": "Drag a rectangle around the lesion. Pixels between the lower and upper "
+                 "limit are previewed in blue; <b>Enter</b> / Apply adds them.",
     "trace": "Move over a lesion to see its outline, click to add. <b>Shift</b>+click removes.",
     "seeds": "Drag inside the lesion (<span style='color:#00b050'>green</span>). "
              "<b>Shift</b>+drag on nearby background, e.g. kidney "
@@ -84,6 +84,7 @@ STATUS_MARKS = {  # file-list marker, colour, tooltip
     None: ("○ ", "#000000", "Not started"),
 }
 LEVEL_SCALE = 1000  # slider units per 100 % of max
+THR_SCALE = 1000    # threshold slider units per image maximum
 MAX_BRUSH = 60
 
 
@@ -105,18 +106,18 @@ class MainWindow(QMainWindow):
         # segmentation state
         self.model: MaskModel | None = None
         self.ctx = ToolContext(brush_size=config.DEFAULT_BRUSH_SIZE,
-                               grow_percent=config.GROW_PERCENT,
-                               grow_radius=config.GROW_MAX_RADIUS,
-                               grow_smooth=config.GROW_SMOOTH)
+                               thr_method=config.THRESHOLD_METHOD,
+                               thr_min_size=config.THRESHOLD_MIN_SIZE)
         self.tools = {"pan": PanTool(self.ctx),
                       "brush": BrushTool(self.ctx, value=1),
                       "eraser": BrushTool(self.ctx, value=0),
-                      "grow": RegionGrowTool(self.ctx),
+                      "threshold": ThresholdTool(self.ctx),
                       "lasso": LassoTool(self.ctx),
                       "delete": DeleteLesionTool(self.ctx),
                       "trace": LevelTraceTool(self.ctx),
                       "seeds": SeedGrowTool(self.ctx)}
         self.tools["seeds"].on_change = self._on_seeds_changed
+        self.tools["threshold"].on_change = self._on_threshold_changed
         self.current_tool = None
         self.lesion_rows: list[tuple[str, dict]] = []
         self._stats_timer = QTimer(self, singleShot=True, interval=120,
@@ -134,10 +135,10 @@ class MainWindow(QMainWindow):
         # side panels use the full window height; the lesion table sits under the images
         self.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
         self.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
-        self.set_tool("grow")
+        self.set_tool("threshold")
         self._on_seeds_changed(self.tools["seeds"])
         self.set_brush_size(self.ctx.brush_size)
-        self._on_grow_settings()
+        self._reset_threshold_range()
         self._on_overlay_style()
         self._upgrade_dataset()
         self.statusBar().showMessage("Open a whole-body NM DICOM file (Ctrl+O) or a folder (Ctrl+Shift+O)")
@@ -290,25 +291,38 @@ class MainWindow(QMainWindow):
         self.seeds_cancel_btn.clicked.connect(lambda: self.tools["seeds"].cancel())
         sdl.addLayout(self._button_row(self.seeds_apply_btn, self.seeds_cancel_btn))
 
-        grow_box, gl = self._group("Region grow")
-        self.grow_slider = QSlider(Qt.Horizontal)
-        self.grow_slider.setRange(5, 95)
-        self.grow_slider.setValue(int(self.ctx.grow_percent))
-        self.grow_slider.valueChanged.connect(self._on_grow_settings)
-        self.grow_value = QLabel()
-        gl.addWidget(self._slider_row("Threshold (% of peak)", self.grow_slider, self.grow_value))
-        self.radius_slider = QSlider(Qt.Horizontal)
-        self.radius_slider.setRange(3, 120)
-        self.radius_slider.setValue(self.ctx.grow_radius)
-        self.radius_slider.valueChanged.connect(self._on_grow_settings)
-        self.radius_value = QLabel()
-        gl.addWidget(self._slider_row("Max radius", self.radius_slider, self.radius_value))
-        self.smooth_check = QCheckBox("Smooth image before growing")
-        self.smooth_check.setToolTip("Gaussian smoothing (1 pixel) reduces noise in low-count images")
-        self.smooth_check.setChecked(self.ctx.grow_smooth)
-        self.smooth_check.toggled.connect(self._on_grow_settings)
-        gl.addWidget(self.smooth_check)
-        gl.addWidget(self._hint("Moving a slider re-tunes the lesion you clicked last."))
+        thr_box, thl = self._group("Threshold")
+        self.thr_method_combo = QComboBox()
+        self.thr_method_combo.addItems(THRESHOLD_METHODS)
+        self.thr_method_combo.setCurrentText(self.ctx.thr_method)
+        self.thr_method_combo.setToolTip("Automatic methods (as in 3D Slicer) compute the "
+                                         "lower limit from the pixels inside the rectangle; "
+                                         "Manual keeps the slider values.")
+        self.thr_method_combo.currentTextChanged.connect(self._on_thr_method)
+        thl.addWidget(self._labeled("Method", self.thr_method_combo))
+        self.thr_lower_slider = QSlider(Qt.Horizontal)
+        self.thr_lower_slider.setRange(0, THR_SCALE)
+        self.thr_lower_slider.valueChanged.connect(self._on_thr_sliders)
+        self.thr_lower_value = QLabel()
+        thl.addWidget(self._slider_row("Lower limit", self.thr_lower_slider, self.thr_lower_value))
+        self.thr_upper_slider = QSlider(Qt.Horizontal)
+        self.thr_upper_slider.setRange(0, THR_SCALE)
+        self.thr_upper_slider.valueChanged.connect(self._on_thr_sliders)
+        self.thr_upper_value = QLabel()
+        thl.addWidget(self._slider_row("Upper limit", self.thr_upper_slider, self.thr_upper_value))
+        self.thr_largest_check = QCheckBox("Keep only the largest region")
+        self.thr_largest_check.setToolTip("Drop every blob in the rectangle except the biggest")
+        self.thr_largest_check.setChecked(self.ctx.thr_largest_only)
+        self.thr_largest_check.toggled.connect(self._on_thr_options)
+        thl.addWidget(self.thr_largest_check)
+        self.thr_status = self._hint("")
+        thl.addWidget(self.thr_status)
+        self.thr_apply_btn = QPushButton("Apply  (Enter)")
+        self.thr_apply_btn.setObjectName("primary")
+        self.thr_apply_btn.clicked.connect(lambda: self.tools["threshold"].apply())
+        self.thr_cancel_btn = QPushButton("Cancel  (Esc)")
+        self.thr_cancel_btn.clicked.connect(lambda: self.tools["threshold"].cancel())
+        thl.addLayout(self._button_row(self.thr_apply_btn, self.thr_cancel_btn))
 
         brush_box, bl = self._group("Brush size")
         self.brush_slider = QSlider(Qt.Horizontal)
@@ -422,7 +436,7 @@ class MainWindow(QMainWindow):
         keys_box, kl = self._group("Shortcuts")
         kl.addWidget(QLabel(
             "<table cellspacing='0' cellpadding='2'>"
-            "<tr><td><b>G</b></td><td>Region grow</td></tr>"
+            "<tr><td><b>R</b></td><td>Threshold in a rectangle (Enter applies)</td></tr>"
             "<tr><td><b>T</b></td><td>Level tracing</td></tr>"
             "<tr><td><b>S</b></td><td>Grow from seeds (Enter applies)</td></tr>"
             "<tr><td><b>B / E</b></td><td>Brush / eraser</td></tr>"
@@ -437,11 +451,11 @@ class MainWindow(QMainWindow):
 
         self.control_tabs = QTabWidget()
         self.control_tabs.setDocumentMode(True)
-        self.tool_option_boxes = {"grow": [grow_box], "trace": [trace_box],
+        self.tool_option_boxes = {"threshold": [thr_box], "trace": [trace_box],
                                   "seeds": [brush_box, seeds_box],
                                   "brush": [brush_box], "eraser": [brush_box]}
-        self._all_option_boxes = [grow_box, trace_box, seeds_box, brush_box]
-        self.control_tabs.addTab(self._tab_page(layer_box, tools_box, grow_box, trace_box,
+        self._all_option_boxes = [thr_box, trace_box, seeds_box, brush_box]
+        self.control_tabs.addTab(self._tab_page(layer_box, tools_box, thr_box, trace_box,
                                                 seeds_box, brush_box, mask_box),
                                  "Segment")
         self.control_tabs.addTab(self._tab_page(case_box, summary_box), "Case")
@@ -719,7 +733,6 @@ class MainWindow(QMainWindow):
         self._new_mask_model()
         self._update_images(reset_contrast=True)
         self._update_layer_labels()
-        self._on_grow_settings()          # mm values depend on this file's pixel size
         msg = self._load_existing_case()
         QTimer.singleShot(0, self.fit_views)  # after layout has sized the canvases
         self._update_info()
@@ -734,8 +747,9 @@ class MainWindow(QMainWindow):
         ew = self.ew_combo.currentData()
         self.images = {v: self.study.image(v, ew) for v in self.study.views}
         self.ctx.set_images(self.images)
-        self.tools["grow"].forget()
+        self.tools["threshold"].cancel()
         self.global_max = max(float(a.max()) for a in self.images.values()) or 1.0
+        self._reset_threshold_range()
         for v, img in self.images.items():
             self.canvases[v].set_image(img, self.study.mirror.get(v, False))
         if reset_contrast:
@@ -1191,14 +1205,61 @@ class MainWindow(QMainWindow):
         self.model.apply_many(regions, 0)     # one undo step for all of them
         self.statusBar().showMessage(f"Deleted {len(sel)} lesion(s) — Ctrl+Z to undo", 5000)
 
-    def _on_grow_settings(self, *_):
-        self.ctx.grow_percent = float(self.grow_slider.value())
-        self.ctx.grow_radius = int(self.radius_slider.value())
-        self.ctx.grow_smooth = self.smooth_check.isChecked()
-        mm = self.ctx.grow_radius * (self.study.pixel_spacing[1] if self.study else 1.0)
-        self.grow_value.setText(f"{self.ctx.grow_percent:.0f} %")
-        self.radius_value.setText(f"{self.ctx.grow_radius} px  (≈ {mm:.0f} mm)")
-        self.tools["grow"].regrow()
+    # ------------------------------------------------- threshold tool
+    def _thr_from_slider(self, v: int) -> float:
+        return v / THR_SCALE * self.global_max
+
+    def _thr_to_slider(self, x: float) -> int:
+        return int(np.clip(round(x / self.global_max * THR_SCALE), 0, THR_SCALE))
+
+    def _sync_thr_sliders(self):
+        """Show the context's limits on the sliders without triggering a recompute."""
+        for slider, value, label in ((self.thr_lower_slider, self.ctx.thr_lower, self.thr_lower_value),
+                                     (self.thr_upper_slider, self.ctx.thr_upper, self.thr_upper_value)):
+            slider.blockSignals(True)
+            slider.setValue(self._thr_to_slider(value))
+            slider.blockSignals(False)
+            label.setText(f"{value:.0f} counts")
+
+    def _reset_threshold_range(self):
+        """New image / energy window: limits span the new image's range."""
+        self.ctx.thr_upper = self.global_max
+        self.ctx.thr_lower = min(self.ctx.thr_lower, self.global_max) or 0.4 * self.global_max
+        self._sync_thr_sliders()
+        self._on_threshold_changed(self.tools["threshold"])
+
+    def _on_thr_sliders(self, *_):
+        self.ctx.thr_lower = self._thr_from_slider(self.thr_lower_slider.value())
+        self.ctx.thr_upper = self._thr_from_slider(self.thr_upper_slider.value())
+        self.thr_lower_value.setText(f"{self.ctx.thr_lower:.0f} counts")
+        self.thr_upper_value.setText(f"{self.ctx.thr_upper:.0f} counts")
+        self.tools["threshold"].refresh()
+
+    def _on_thr_method(self, method: str):
+        self.ctx.thr_method = method
+        tool = self.tools["threshold"]
+        if tool.auto_threshold():
+            self._sync_thr_sliders()
+        tool.refresh()
+
+    def _on_thr_options(self, *_):
+        self.ctx.thr_largest_only = self.thr_largest_check.isChecked()
+        self.tools["threshold"].refresh()
+
+    def _on_threshold_changed(self, tool):
+        self._sync_thr_sliders()      # an automatic method may have moved the lower limit
+        if not tool.has_box:
+            text = "Drag a rectangle around the lesion."
+        elif tool.has_result:
+            text = (f"{tool.n_pixels} pixels in range (blue). <b>Apply</b> adds them to the "
+                    "mask; move the limits to tune.")
+        elif self.ctx.thr_upper < self.ctx.thr_lower:
+            text = "Upper limit is below the lower limit."
+        else:
+            text = "No pixels in range: lower the lower limit or draw a new rectangle."
+        self.thr_status.setText(text)
+        self.thr_apply_btn.setEnabled(tool.has_result)
+        self.thr_cancel_btn.setEnabled(tool.has_box)
 
     def undo(self):
         if self.model:

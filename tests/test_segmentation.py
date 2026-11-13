@@ -12,22 +12,49 @@ def blob_image():
     return img
 
 
-def test_find_peak():
-    img = blob_image()
-    assert seg.find_peak(img, 52, 42, search=3) == (50, 40)
+def test_clip_box():
+    assert seg.clip_box((200, 100), 60, 50, 30, 20) == (30, 20, 61, 51)
+    assert seg.clip_box((200, 100), -5, -5, 300, 300) == (0, 0, 200, 100)
+    assert seg.clip_box((200, 100), -5, 10, -2, 20) is None
+    assert seg.clip_box((200, 100), 7, 7, 7, 7) == (7, 7, 8, 8)      # a click = 1 pixel
 
 
-def test_region_grow_threshold_and_radius():
+def test_threshold_in_box():
     img = blob_image()
-    r40 = seg.region_grow(img, 51, 41, 40, max_radius=30)
-    r80 = seg.region_grow(img, 51, 41, 80, max_radius=30)
-    assert r40[50, 40] and r80[50, 40]
-    assert r40.sum() > r80.sum() > 0
-    assert not r40[150, 60]                     # other lesion not included
-    small = seg.region_grow(img, 50, 40, 5, max_radius=3)
-    assert small.sum() <= np.pi * 3 ** 2 + 10   # limited by radius
-    assert seg.region_grow(img, -5, 40, 40, 10) is None
-    assert seg.region_grow(np.zeros((10, 10)), 5, 5, 40, 3) is None
+    box = seg.clip_box(img.shape, 30, 20, 70, 95)      # lesion A and part of the "organ"
+    m40 = seg.threshold_in_box(img, box, 40, 1e9)
+    m80 = seg.threshold_in_box(img, box, 80, 1e9)
+    assert m40[50, 40] and m80[50, 40]
+    assert m40.sum() > m80.sum() > 0
+    assert not m40[150, 60]                            # outside the rectangle
+    assert not m40[:30].any() and not m40[70:].any()
+    # a lower limit of 15 also takes the organ (20 counts) -> two blobs; largest_only keeps one
+    two = seg.threshold_in_box(img, box, 15, 1e9)
+    assert two[50, 80] and two[50, 40]
+    one = seg.threshold_in_box(img, box, 15, 1e9, largest_only=True)
+    assert one.any() and one.sum() < two.sum()
+    assert seg.threshold_in_box(img, box, 40, 30).sum() == 0     # upper < lower
+    assert seg.threshold_in_box(img, None, 0, 1e9).sum() == 0
+    # single-pixel specks are dropped with min_size
+    speck = np.zeros((20, 20)); speck[5, 5] = 1; speck[10:14, 10:14] = 1
+    kept = seg.threshold_in_box(speck, (0, 0, 20, 20), 0.5, 2, min_size=4)
+    assert not kept[5, 5] and kept[12, 12]
+
+
+def test_auto_threshold_methods_split_lesion_from_background():
+    rng = np.random.default_rng(0)
+    img = blob_image() + rng.poisson(2.0, (200, 100))
+    box = seg.clip_box(img.shape, 30, 20, 70, 60)
+    vals = img[box[0]:box[2], box[1]:box[3]]
+    assert seg.auto_threshold(vals, "Manual") is None
+    assert seg.auto_threshold(np.full(50, 3.0), "Otsu") is None       # constant image
+    for method in seg.THRESHOLD_METHODS[1:]:
+        thr = seg.auto_threshold(vals, method)
+        assert thr is not None and np.isfinite(thr), method
+        assert vals.min() < thr <= vals.max(), method
+        m = seg.threshold_in_box(img, box, thr, 1e9)
+        assert m[50, 40], method                      # the peak is always foreground
+        assert m.sum() < vals.size, method            # and not the whole rectangle
 
 
 def test_polygon_mask_square():

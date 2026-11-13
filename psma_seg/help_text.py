@@ -10,7 +10,7 @@ listed. ○ not started · … in progress · ✔ complete · ✖ excluded.
 The first unfinished file opens automatically.</li>
 <li>Adjust contrast if needed (right-drag, or <i>Auto contrast</i> = A).</li>
 <li>Segment every lesion on the <b>anterior</b> and the <b>posterior</b> view
-(usually <b>Region grow</b>, then refine with brush / eraser).</li>
+(usually <b>Threshold</b>, then refine with brush / eraser).</li>
 <li>Do <b>not</b> segment physiological uptake (salivary glands, kidneys, liver, spleen,
 bowel, bladder) unless it is a lesion.</li>
 <li>Set the <b>Status</b>: <i>Complete</i> when the case is fully reviewed. A complete case
@@ -20,9 +20,13 @@ with no lesion is a valid negative case. Use <i>Excluded</i> for unusable scans.
 
 <h3>Tools</h3>
 <table cellpadding="3">
-<tr><td><b>G</b></td><td>Region grow: click a hot lesion. Pixels ≥ threshold % of the local
-peak, connected to it and within the max radius, are added. Moving the sliders re-tunes
-the last lesion.</td></tr>
+<tr><td><b>R</b></td><td>Threshold (as in 3D Slicer): drag a rectangle around the lesion.
+The pixels inside it with counts between the <i>lower</i> and <i>upper</i> limit are previewed
+in blue. An automatic <i>Method</i> (Otsu, Huang, IsoData, Li, Maximum Entropy, Moments,
+Kittler-Illingworth, Renyi Entropy, Shanbhag, Triangle, Yen) computes the lower limit from the
+pixels in the rectangle; <i>Manual</i> leaves the sliders to you. <b>Enter</b> / Apply adds the
+preview, Esc cancels. Tiny specks are dropped; <i>Keep only the largest region</i> drops
+everything but the biggest blob.</td></tr>
 <tr><td><b>T</b></td><td>Level tracing (as in 3D Slicer): moving the mouse shows the outline
 of the count level under the cursor; click to add that region. Point near the lesion edge for
 a larger region, nearer the centre for a smaller one.</td></tr>
@@ -43,7 +47,7 @@ double-click / Enter to close. Esc cancels, Backspace removes the last point.</t
 <p>Each energy window (e.g. 113 keV and 208 keV) has its own lesion mask. Choose the window
 at the top of the <b>Segment</b> tab, or press <b>W</b> to cycle.</p>
 <ul>
-<li><b>Sum of all windows</b>: drawing, erasing, region grow, lasso, delete and clear change
+<li><b>Sum of all windows</b>: drawing, erasing, threshold, lasso, delete and clear change
 <b>every</b> window at once. The overlay shows all lesions:
 <span style="color:#ff1e1e">red</span> = in all windows,
 <span style="color:#1e8cff">blue</span> = in some windows only.</li>

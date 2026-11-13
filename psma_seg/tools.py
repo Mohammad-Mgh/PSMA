@@ -18,6 +18,7 @@ TRACE_COLOR = (255, 200, 0)        # level-tracing outline
 SEED_LESION_COLOR = (0, 200, 80)   # grow from seeds: lesion seeds
 SEED_BG_COLOR = (255, 210, 0)      # grow from seeds: background seeds
 SEED_RESULT_COLOR = (0, 200, 255)  # grow from seeds: preview of the result
+THRESH_COLOR = (0, 200, 255)       # threshold: preview of the pixels in range
 
 
 @dataclass
@@ -25,10 +26,12 @@ class ToolContext:
     model: MaskModel | None = None
     brush_size: int = 5          # diameter in pixels
     images: dict = field(default_factory=dict)   # view -> displayed float image
-    grow_percent: float = 40.0   # region-grow threshold, % of local peak
-    grow_radius: int = 30        # region-grow max distance from peak, pixels
-    grow_smooth: bool = True     # Gaussian pre-smoothing (planar images are noisy)
     trace_smooth: bool = True    # level tracing on the smoothed image
+    thr_method: str = "Otsu"     # threshold tool: automatic method or "Manual"
+    thr_lower: float = 0.0       # threshold tool: lower / upper limit (counts)
+    thr_upper: float = 0.0
+    thr_min_size: int = 1        # threshold tool: drop blobs smaller than this (px)
+    thr_largest_only: bool = False
     _smooth_cache: dict = field(default_factory=dict)
 
     def set_images(self, images: dict):
@@ -39,9 +42,6 @@ class ToolContext:
         if view not in self._smooth_cache:
             self._smooth_cache[view] = ndimage.gaussian_filter(self.images[view], sigma=1.0)
         return self._smooth_cache[view]
-
-    def grow_image(self, view: str) -> np.ndarray:
-        return self.smoothed(view) if self.grow_smooth else self.images[view]
 
     def trace_image(self, view: str) -> np.ndarray:
         return self.smoothed(view) if self.trace_smooth else self.images[view]
@@ -125,62 +125,6 @@ class BrushTool(Tool):
         self._view = None
 
     cancel = lambda self: self.release(None, 0, 0, None)  # noqa: E731
-
-
-class RegionGrowTool(Tool):
-    """Click a hot lesion: adds the connected region >= X % of the local peak.
-
-    Shift+click removes that region instead. After a click, changing the threshold
-    or max-radius re-computes the last region in place (call `regrow()`), so the
-    user can tune it visually without extra undo steps.
-    """
-    name = "grow"
-    cursor = Qt.PointingHandCursor
-
-    def __init__(self, ctx: ToolContext):
-        super().__init__(ctx)
-        self._last = None   # (view, row, col, base_mask, value, result_mask)
-
-    def press(self, canvas, row, col, ev):
-        model = self.ctx.model
-        view = canvas.view_name
-        if model is None or view not in self.ctx.images:
-            return
-        value = 0 if ev.modifiers() & Qt.ShiftModifier else 1
-        base = model.layers[view].copy()
-        model.begin_edit(view)
-        result = self._apply(view, row, col, base, value)
-        model.end_edit()
-        self._last = ((view, model.active, row, col, base, value, result)
-                      if result is not None else None)
-
-    def _apply(self, view, row, col, base, value):
-        region = seg.region_grow(self.ctx.grow_image(view), row, col,
-                                 self.ctx.grow_percent, self.ctx.grow_radius)
-        if region is None:
-            return None
-        model = self.ctx.model
-        model.layers[view] = base.copy()            # start again from the state before the click
-        model.apply(view, region, value, undoable=False)
-        return model.layers[view].copy()
-
-    def regrow(self) -> bool:
-        """Re-run the last region grow with the current settings (if still the latest edit)."""
-        model = self.ctx.model
-        if self._last is None or model is None:
-            return False
-        view, active, row, col, base, value, result = self._last
-        if (view not in model.layers or model.active != active
-                or not np.array_equal(model.layers[view], result)):
-            self._last = None      # mask was edited since -> don't touch it
-            return False
-        new_result = self._apply(view, row, col, base, value)
-        self._last = ((view, active, row, col, base, value, new_result)
-                      if new_result is not None else None)
-        return True
-
-    def forget(self):
-        self._last = None
 
 
 class LassoTool(Tool):
@@ -460,6 +404,140 @@ class SeedGrowTool(Tool):
         """Discard all seeds and the preview."""
         for c in self.canvases.values():
             c.set_preview(None)
+        self._reset()
+        if self.on_change:
+            self.on_change(self)
+
+
+class ThresholdTool(Tool):
+    """Threshold (3D Slicer's Threshold effect, limited to a rectangle): drag a rectangle,
+    the pixels inside it whose counts lie between the lower and upper limit are previewed;
+    an automatic method (Otsu, Huang, ...) computes the lower limit from the pixels in the
+    rectangle. Enter / Apply adds the preview to the mask, Esc cancels."""
+    name = "threshold"
+
+    def __init__(self, ctx: ToolContext):
+        super().__init__(ctx)
+        self.on_change = None      # callback(tool) for the UI (sliders, Apply button)
+        self._reset()
+
+    def _reset(self):
+        self.view: str | None = None
+        self.box = None            # (r0, c0, r1, c1), exclusive ends, clipped to the image
+        self.result: np.ndarray | None = None
+        self._canvas = None
+        self._anchor = None        # (row, col) where the drag started
+        self._dragging = False
+
+    @property
+    def has_box(self) -> bool:
+        return self.box is not None
+
+    @property
+    def has_result(self) -> bool:
+        return self.result is not None and bool(self.result.any())
+
+    @property
+    def n_pixels(self) -> int:
+        return int(self.result.sum()) if self.result is not None else 0
+
+    def box_values(self) -> np.ndarray | None:
+        """Image values inside the rectangle."""
+        if self.box is None or self.view not in self.ctx.images:
+            return None
+        r0, c0, r1, c1 = self.box
+        return self.ctx.images[self.view][r0:r1, c0:c1]
+
+    # ------------------------------------------------------------ mouse
+    def press(self, canvas, row, col, ev):
+        if self.ctx.model is None or canvas.view_name not in self.ctx.images:
+            return
+        if self._canvas is not None and canvas is not self._canvas:
+            self._canvas.show_path(None, None)
+            self._canvas.set_preview(None)
+        self.view, self._canvas = canvas.view_name, canvas
+        self._anchor = (row, col)
+        self._dragging = True
+        self.result = None
+        self._set_box(row, col, row, col)
+
+    def move(self, canvas, row, col, ev):
+        if not self._dragging or canvas is not self._canvas:
+            return
+        self._set_box(*self._anchor, row, col)
+
+    def release(self, canvas, row, col, ev):
+        if not self._dragging:
+            return
+        self._dragging = False
+        self._set_box(*self._anchor, row, col)
+        if self.box is None:
+            self.cancel()
+            return
+        self.auto_threshold()
+        self.refresh()
+
+    def _set_box(self, r0, c0, r1, c1):
+        shape = self.ctx.images[self.view].shape
+        self.box = seg.clip_box(shape, r0, c0, r1, c1)
+        if self.box is None:
+            self._canvas.show_path(None, None)
+            return
+        b0, a0, b1, a1 = self.box
+        self._canvas.show_path([(b0, a0), (b0, a1), (b1, a1), (b1, a0), (b0, a0)], None)
+
+    # ------------------------------------------------------------ thresholds
+    def auto_threshold(self) -> bool:
+        """Set ctx.thr_lower from the selected method and the rectangle's pixels.
+        Returns True if a value was computed (False for Manual / no rectangle)."""
+        vals = self.box_values()
+        if vals is None:
+            return False
+        thr = seg.auto_threshold(vals, self.ctx.thr_method)
+        if thr is None:
+            return False
+        self.ctx.thr_lower = thr
+        if self.ctx.thr_upper < thr:
+            self.ctx.thr_upper = float(vals.max())
+        return True
+
+    def refresh(self):
+        """Recompute the preview with the current limits (after a slider / method change)."""
+        if self.box is None or self._dragging:
+            return
+        ctx = self.ctx
+        self.result = seg.threshold_in_box(ctx.images[self.view], self.box, ctx.thr_lower,
+                                           ctx.thr_upper, ctx.thr_min_size,
+                                           ctx.thr_largest_only)
+        self._canvas.set_preview([(self.result, THRESH_COLOR, 50, True)])
+        if self.on_change:
+            self.on_change(self)
+
+    def apply(self) -> bool:
+        """Add the previewed pixels to the mask (one undo step)."""
+        model = self.ctx.model
+        ok = model is not None and self.has_result
+        if ok:
+            model.apply(self.view, self.result, 1)
+        self.cancel()
+        return ok
+
+    def key(self, canvas, ev) -> bool:
+        if self.box is None:
+            return False
+        if ev.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.apply()
+        elif ev.key() == Qt.Key_Escape:
+            self.cancel()
+        else:
+            return False
+        return True
+
+    def cancel(self):
+        """Discard the rectangle and the preview."""
+        if self._canvas is not None:
+            self._canvas.show_path(None, None)
+            self._canvas.set_preview(None)
         self._reset()
         if self.on_change:
             self.on_change(self)
