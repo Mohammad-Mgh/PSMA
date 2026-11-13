@@ -558,7 +558,8 @@ class MainWindow(QMainWindow):
                                      triggered=self.save_and_next, enabled=False)
         self.act_save_next.setToolTip("Save and open the next file in the list (Ctrl+Enter)")
         self.act_report = QAction("Export PDF report…", self, shortcut="Ctrl+P",
-                                  triggered=self.export_report, enabled=False)
+                                  triggered=lambda: self.export_report(), enabled=False)
+        self.act_report.setIconText("Report")  # short label on the toolbar button
         self.act_report.setToolTip("PDF with Ant / Post images of every energy window, the "
                                    "lesion outlines and the lesion tables (Ctrl+P). Saved next "
                                    "to the DICOM file.")
@@ -566,7 +567,7 @@ class MainWindow(QMainWindow):
         a_open_ds = QAction("Open dataset folder in Explorer", self,
                             triggered=self.open_dataset_folder)
 
-        for a in (a_open, a_folder, self.act_save):
+        for a in (a_open, a_folder, self.act_save, self.act_report):
             tb.addAction(a)
         tb.addSeparator()
         for a in self.tool_actions.values():
@@ -879,6 +880,8 @@ class MainWindow(QMainWindow):
         """PDF report next to the DICOM file (asks for a place if that folder is read-only)."""
         if self.study is None or self.model is None:
             return None
+        if not path:  # QAction.triggered passes ``checked=False`` — treat it as "no path"
+            path = None
         target = Path(path) if path else default_report_path(self.study)
         if path is None:
             if target.exists():
@@ -909,10 +912,30 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Report saved: {out}" +
                                      ("  (segmentation not saved yet)" if unsaved else ""), 10000)
         if path is None:
-            from PyQt5.QtCore import QUrl
-            from PyQt5.QtGui import QDesktopServices
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(out)))
+            self._report_done_message(out, unsaved)
         return out
+
+    def _report_done_message(self, out: Path, unsaved: bool) -> None:
+        """Tell the user where the report is and offer to open it or its folder."""
+        from PyQt5.QtCore import QUrl
+        from PyQt5.QtGui import QDesktopServices
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Report created")
+        box.setText(f"The PDF report was created:<br><b>{out.name}</b>")
+        box.setInformativeText(
+            f"Saved in:<br>{out.parent}" +
+            ("<br><br><i>Note: the segmentation itself is not saved yet (Ctrl+S).</i>"
+             if unsaved else ""))
+        b_open = box.addButton("Open report", QMessageBox.AcceptRole)
+        b_folder = box.addButton("Open folder", QMessageBox.ActionRole)
+        box.addButton("Close", QMessageBox.RejectRole)
+        box.setDefaultButton(b_open)
+        box.exec_()
+        if box.clickedButton() is b_open:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(out)))
+        elif box.clickedButton() is b_folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(out.parent)))
 
     def save_and_next(self):
         if not self.save_case():

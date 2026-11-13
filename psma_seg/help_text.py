@@ -67,7 +67,7 @@ shown.</li>
 <tr><td>F</td><td>Fit image to window</td></tr>
 <tr><td>Ctrl+S</td><td>Save case</td></tr>
 <tr><td>Ctrl+Enter</td><td>Save and open the next file</td></tr>
-<tr><td>Ctrl+P</td><td>Export PDF report (saved next to the DICOM file)</td></tr>
+<tr><td>Ctrl+P</td><td>Create the PDF report (also the <b>Report</b> toolbar button); a message then shows where it was saved</td></tr>
 <tr><td>Ctrl+O / Ctrl+Shift+O</td><td>Open file / folder</td></tr>
 </table>
 

@@ -83,7 +83,7 @@ Press **F1** in the app for all shortcuts.
 The **Lesions** table (bottom) lists each lesion with its area (cm²) and counts. Click a row to
 jump to that lesion.
 
-**PDF report** (*File → Export PDF report…*, Ctrl+P): one page per energy-window choice (Sum,
+**PDF report** (toolbar button *Report*, *File → Export PDF report…*, or Ctrl+P): one page per energy-window choice (Sum,
 then each window) with the anterior and posterior views and numbered lesion outlines, then the
 summary totals, the lesion tables (Sum and per window), notes and signature lines. It uses the
 contrast shown on screen and the current masks (marked *not saved* if there are unsaved changes).
