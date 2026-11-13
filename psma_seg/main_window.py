@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtCore import QItemSelection, QItemSelectionModel, QSettings, Qt, QTimer
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QComboBox,
+from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QComboBox, QMenu,
                              QDockWidget, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
                              QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
                              QListWidgetItem, QMainWindow, QPlainTextEdit,
@@ -108,6 +108,7 @@ class MainWindow(QMainWindow):
         self._build_controls_dock()
         self._build_files_dock()
         self._build_lesion_dock()
+        self._build_panel_menu()
         # side panels use the full window height; the lesion table sits under the images
         self.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
         self.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
@@ -444,6 +445,7 @@ class MainWindow(QMainWindow):
         dock.setMinimumWidth(320)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self.resizeDocks([dock], [340], Qt.Horizontal)
+        self.controls_dock = dock
 
     def _build_files_dock(self):
         self.file_list = QListWidget()
@@ -495,6 +497,7 @@ class MainWindow(QMainWindow):
         dock.setWidget(w)
         self.addDockWidget(Qt.BottomDockWidgetArea, dock)
         self.resizeDocks([dock], [190], Qt.Vertical)
+        self.lesions_dock = dock
 
     def _build_actions(self):
         tb = self.addToolBar("Main")
@@ -574,7 +577,9 @@ class MainWindow(QMainWindow):
         for a in (a_fit, a_auto, a_inv, a_toggle, a_next_ew):
             mv.addAction(a)
         mv.addSeparator()
+        self.view_menu = mv
         mt = mv.addMenu("&Theme")
+        self.theme_menu = mt
         theme_group = QActionGroup(self)
         self.theme_actions = {}
         for name in THEMES:
@@ -604,6 +609,29 @@ class MainWindow(QMainWindow):
         bb.rejected.connect(dlg.reject)
         lay.addWidget(bb)
         dlg.exec_()
+
+    def _build_panel_menu(self):
+        """View > Panels: bring back a Files / Controls / Lesions panel that was closed."""
+        mp = QMenu("&Panels", self)
+        for dock, key in ((self.files_dock, "F9"), (self.controls_dock, "F10"),
+                          (self.lesions_dock, "F11")):
+            a = dock.toggleViewAction()   # checkable; re-shows a closed panel
+            a.setShortcut(key)
+            a.setToolTip(f"Show / hide the {dock.windowTitle()} panel ({key})")
+            mp.addAction(a)
+        mp.addSeparator()
+        mp.addAction(QAction("Show all panels", self, shortcut="F12",
+                             triggered=self.show_all_panels))
+        before = self.theme_menu.menuAction()
+        self.view_menu.insertMenu(before, mp)
+        self.view_menu.insertSeparator(before)
+
+    def show_all_panels(self):
+        """Bring back every panel (Files, Controls, Lesions) that was closed or floated away."""
+        for dock in (self.files_dock, self.controls_dock, self.lesions_dock):
+            dock.setFloating(False)
+            dock.show()
+            dock.raise_()
 
     def set_theme(self, name: str):
         """Switch light / dark, remember it, and recolour theme-dependent items."""

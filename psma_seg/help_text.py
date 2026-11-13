@@ -69,6 +69,8 @@ shown.</li>
 <tr><td>Ctrl+Enter</td><td>Save and open the next file</td></tr>
 <tr><td>Ctrl+P</td><td>Create the PDF report (also the <b>Report</b> toolbar button); a message then shows where it was saved</td></tr>
 <tr><td>Ctrl+O / Ctrl+Shift+O</td><td>Open file / folder</td></tr>
+<tr><td>F9 / F10 / F11</td><td>Show / hide the Files / Controls / Lesions panel (<i>View &rarr; Panels</i>)</td></tr>
+<tr><td>F12</td><td>Show all panels again</td></tr>
 </table>
 
 <p><b>Theme</b>: <i>View &rarr; Theme</i> switches between the dark (default) and light theme; the choice is remembered.</p>
